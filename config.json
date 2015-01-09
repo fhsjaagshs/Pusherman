@@ -1,0 +1,1 @@
+{"certificate":"path.pem","key":"path.pen","redisServer":"localhost","redisQueue":"myqueue"}
