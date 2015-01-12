@@ -1,5 +1,7 @@
 {-# LANGUAGE OverloadedStrings, DeriveGeneric #-}
 
+import Push
+
 import Data.Aeson
 import Data.Functor
 import Data.Maybe
@@ -15,14 +17,18 @@ import Control.Monad.IO.Class
 
 import Database.Redis
 
---import Network.PushNotify.APNS
--- import Network.TLS.Extra        (fileReadCertificate,fileReadPrivateKey)
+-- generatePayloadJSON :: String -> String -> Integer -> JSObject (JSValue)
+-- generatePayloadJSON alert sound badge =
+--
 
--- for CTRL-C
-import Control.Exception as E
-import Control.Concurrent
-import System.Posix.Signals
-import System.Exit
+-- getJSONWithMessage :: String -> JSObject (JSValue)
+-- getJSONWithMessage msg =
+--   let jmsg = JSString (toJSString msg) in
+--   toJSObject [("aps", JSObject (toJSObject [
+--                 ("alert", JSString (toJSString msg)),
+--                 ("sound", JSString (toJSString badge)),
+--                 ("badge", )
+--               ]))]
 
 data Config = Config { 
   certificate :: !FilePath,
@@ -41,7 +47,7 @@ data Notification = Notification {
 instance FromJSON Config
 instance FromJSON Notification
 
-processJSON :: BS.ByteString -> Maybe [APNSMessage]
+processJSON :: BS.ByteString -> Maybe APNSMessage
 processJSON json = case decodeStrict json of
                       Nothing -> Nothing
                       Just notif -> Just (APNSmessage {
@@ -57,10 +63,17 @@ apnsMsg maybeTuple = if isNothing maybeTuple then Nothing else processJSON $ snd
 
 sendAPNSTo :: Config -> BS.ByteString -> IO ()
 sendAPNSTo c bs = do
-   liftIO $ print bs
+   print bs
    listenRedis c
    
-listenPusherman :: Connection -> APNSManager -> IO ()
+processAPNSResult :: APNSConfig -> IO APNSResult -> IO ()
+processAPNSResult config ioResult = do
+  result <- ioResult
+  
+  feedbackAPNS config
+  -- TODO: implement
+
+listenPusherman :: Connection -> APNSManager -> IO APNSResult
 listenPusherman conn apns = do
   runRedis conn $ do
     res <- blpop [(BS.pack (redisQueue c))] 0
@@ -69,25 +82,27 @@ listenPusherman conn apns = do
       Left r -> (liftIO $ putStrLn "Failure to listen.")
       Right r -> case r of
                    Nothing -> liftIO $ putStrLn "Failure to return results"
-                   Just value -> liftIO $ sendAPNSTo c (snd value)
-
+                   Just value -> sendAPNS apns (apnsMsg value)
 
 main :: IO ()
 main = do
   s <- BS.readFile "config.json"
   config <- decodeStrict s
-  
-  let apnsConfig = def {
-                    apnsCertificate = cert,
-                    apnsPrivateKey  = key,
-                    environment     = Local
-                  }
-  
+
   case config of
     Nothing -> (liftIO $ putStrLn "Invalid configuration.")
     Just cnf -> do
       putStrLn ("Connected to Redis @ " ++ (redisServer cnf) ++ " on queue '" ++ (redisQueue cnf) ++ "'")
-      redisconn <- connect $ defaultConnectInfo { connectHost = (redisServer c) }
+      redisconn <- connect $ defaultConnectInfo { connectHost = (redisServer cnf) }
+      cert <- fileReadCertificate (certificate cnf)
+      key <- fileReadPrivateKey (key cnf)
+      
+      let apnsConfig = def {
+                        apnsCertificate = cert,
+                        apnsPrivateKey  = key,
+                        environment     = Local
+                      }
+      
       manager <- startAPNS apnsConfig
       listenPusherman redisconn manager
       closeAPNS manager
