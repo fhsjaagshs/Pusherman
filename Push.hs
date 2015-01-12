@@ -40,8 +40,8 @@ socketWithKeypair :: FilePath -> FilePath -> String -> PortNumber -> IO SSL
 socketWithKeypair certificateFile keyFile host port = do
   -- setup ssl context
   ssl <- OpenSSL.Session.context
-  OpenSSL.Session.contextSetPrivateKeyFile ssl certificateFile
-  OpenSSL.Session.contextSetCertificateFile ssl keyFile
+  OpenSSL.Session.contextSetPrivateKeyFile ssl keyFile
+  OpenSSL.Session.contextSetCertificateFile ssl certificateFile
   OpenSSL.Session.contextSetDefaultCiphers ssl
   OpenSSL.Session.contextSetVerificationMode ssl OpenSSL.Session.VerifyNone
 
