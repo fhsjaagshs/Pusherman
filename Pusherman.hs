@@ -47,13 +47,13 @@ data Notification = Notification {
 instance FromJSON Config
 instance FromJSON Notification
 
-parseFeedback :: SSL -> Get [(B.ByteString, B.ByteString)] -- (timestamp, token)
-parseFeedback ssl = do
-  OpenSSL.Session.connect sslsocket
-  timestampBytes <- OpenSSL.Session.read sslsocket 4
-  tokenLengthBytes <- OpenSSL.Session.read sslsocket 2
-  -- TODO: load token
-  OpenSSL.Session.shutdown sslsocket Unidirectional
+-- parseFeedback :: SSL -> Get [(B.ByteString, B.ByteString)] -- (timestamp, token)
+-- parseFeedback ssl = do
+--   OpenSSL.Session.connect sslsocket
+--   timestampBytes <- OpenSSL.Session.read sslsocket 4
+--   tokenLengthBytes <- OpenSSL.Session.read sslsocket 2
+--   -- TODO: load token
+--   OpenSSL.Session.shutdown sslsocket Unidirectional
   
   
   -- | (B.length feedback < 6) = fail "Invalid feedback: too short"
@@ -64,54 +64,41 @@ parseFeedback ssl = do
   --   if
   --   return $ (fromIntegral timestamp, token)
 
--- TODO: Implement command line args
--- loadCommandLineArgs :: IO (Maybe Config)
--- loadCommandLineArgs = Config
-
-loadConfigFile :: FilePath -> IO (Maybe Config)
-loadConfigFile filePath = do
-  s <- BS.readFile "config.json"
-  config <- decodeStrict s
-
-  case config of
-    Nothing -> liftIO $ putStrLn "Invalid configuration."
-    Just cnf -> return $ Just $ cnf
-
 -- transforms the JSON from Redis to an APNS payload
-processPayload :: BS.ByteString -> [(BS.ByteString, BS.ByteString)]
+processPayload :: String -> [(String, String)]
 processPayload input = [("0805ab2e45ceddbbb5b83597a1f45fddd93708e1d107de34d5a3e71b6434232a", input)]
 
 -- Gets a payload from Redis
-loadPayload :: Connection -> IO (Maybe BS.ByteString)
-loadPayload redisconn = runRedis redisconn $ do
-  res <- blpop [(BS.pack (redisQueue c))] 0
+loadPayload :: Connection -> String -> IO (Maybe String)
+loadPayload redisconn queue = runRedis redisconn $ do
+  res <- blpop [(BS.pack queue)] 0
   case res of
     Left r -> return Nothing
     Right r -> case r of
                  Nothing -> return Nothing
-                 Just value -> return $ Just $ snd value
-  
+                 Just value -> return $ Just (BS.unpack(snd value))
+
 -- Pattern matching wrapper
 -- TODO: retrieve status
-sendPush :: Config -> (BS.ByteString, BS.ByteString) -> IO ()
+sendPush :: Config -> (String, String) -> IO ()
 sendPush config (token, payload) = Push.sendAPNS (certificate config) (key config) token payload
 
 -- TODO: retrieve status
 listener :: Config -> Connection -> IO ()
 listener config redisconn = do
-  payload <- loadPayload redisconn
+  payload <- loadPayload redisconn (redisQueue config)
   
   case payload of
     Nothing -> putStrLn "Failed to load notification payload from Redis."
-    Just p -> map (sendPush config) (processPayload p)
+    Just p -> mapM_ (sendPush config) (processPayload p)
   
   listener config redisconn
   
 main :: IO ()
 main = do
-  config <- loadConfigFile "config.json"
-  
-  case config of
+  -- TODO: Implement command line args
+  s <- BS.readFile "config.json"
+  case Data.Aeson.decodeStrict s of
     Nothing -> putStrLn "Invalid configuration."
     Just cnf -> do
       putStrLn ("Connected to Redis @ " ++ (redisServer cnf) ++ " on queue '" ++ (redisQueue cnf) ++ "'")

@@ -36,7 +36,7 @@ getHourExpiryTime = do
   pt <- Data.Time.Clock.POSIX.getPOSIXTime
   return ( (round pt + 60*60):: Word32)
   
-socketWithKeypair :: FilePath -> FilePath -> String -> Integer -> IO SSL
+socketWithKeypair :: FilePath -> FilePath -> String -> PortNumber -> IO SSL
 socketWithKeypair certificateFile keyFile host port = do
   -- setup ssl context
   ssl <- OpenSSL.Session.context
@@ -65,7 +65,7 @@ readFeedback certificateFile keyFile parsefunc = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "feedback.push.apple.com" 2196
   parsed <- parsefunc sslsocket
   return $ parsed
-  
+
 sendAPNS :: FilePath -> FilePath -> String -> String -> IO ()
 sendAPNS certificateFile keyFile token json = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "gateway.push.apple.com" 2195
