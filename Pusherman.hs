@@ -47,63 +47,73 @@ data Notification = Notification {
 instance FromJSON Config
 instance FromJSON Notification
 
-processJSON :: BS.ByteString -> Maybe APNSMessage
-processJSON json = case decodeStrict json of
-                      Nothing -> Nothing
-                      Just notif -> Just (APNSmessage {
-                                            deviceTokens = (HST.fromList (map TXT.pack (notif tokens))),
-                                            expiry = Nothing,
-                                            alert = (TXT.pack (notif alert)),
-                                            badge = (notif badge),
-                                            sound = (notif sound)
-                                          })
-
-apnsMsg :: Maybe (BS.ByteString, BS.ByteString) -> Maybe APNSmessage
-apnsMsg maybeTuple = if isNothing maybeTuple then Nothing else processJSON $ snd $ fromJust maybeTuple
-
-sendAPNSTo :: Config -> BS.ByteString -> IO ()
-sendAPNSTo c bs = do
-   print bs
-   listenRedis c
-   
-processAPNSResult :: APNSConfig -> IO APNSResult -> IO ()
-processAPNSResult config ioResult = do
-  result <- ioResult
+parseFeedback :: SSL -> Get [(B.ByteString, B.ByteString)] -- (timestamp, token)
+parseFeedback ssl = do
+  OpenSSL.Session.connect sslsocket
+  timestampBytes <- OpenSSL.Session.read sslsocket 4
+  tokenLengthBytes <- OpenSSL.Session.read sslsocket 2
+  -- TODO: load token
+  OpenSSL.Session.shutdown sslsocket Unidirectional
   
-  feedbackAPNS config
-  -- TODO: implement
-
-listenPusherman :: Connection -> APNSManager -> IO APNSResult
-listenPusherman conn apns = do
-  runRedis conn $ do
-    res <- blpop [(BS.pack (redisQueue c))] 0
   
-    case res of
-      Left r -> (liftIO $ putStrLn "Failure to listen.")
-      Right r -> case r of
-                   Nothing -> liftIO $ putStrLn "Failure to return results"
-                   Just value -> sendAPNS apns (apnsMsg value)
+  -- | (B.length feedback < 6) = fail "Invalid feedback: too short"
+  -- | (B.length feedback > 255) = fail "Invalid feedback: too long"
+  -- | otherwise = do
+  --   timestamp <- getWord32be
+  --   tokenLength <- getWord16be
+  --   if
+  --   return $ (fromIntegral timestamp, token)
 
-main :: IO ()
-main = do
+-- TODO: Implement command line args
+-- loadCommandLineArgs :: IO (Maybe Config)
+-- loadCommandLineArgs = Config
+
+loadConfigFile :: FilePath -> IO (Maybe Config)
+loadConfigFile filePath = do
   s <- BS.readFile "config.json"
   config <- decodeStrict s
 
   case config of
-    Nothing -> (liftIO $ putStrLn "Invalid configuration.")
+    Nothing -> liftIO $ putStrLn "Invalid configuration."
+    Just cnf -> return $ Just $ cnf
+
+-- transforms the JSON from Redis to an APNS payload
+processPayload :: BS.ByteString -> [(BS.ByteString, BS.ByteString)]
+processPayload input = [("0805ab2e45ceddbbb5b83597a1f45fddd93708e1d107de34d5a3e71b6434232a", input)]
+
+-- Gets a payload from Redis
+loadPayload :: Connection -> IO (Maybe BS.ByteString)
+loadPayload redisconn = runRedis redisconn $ do
+  res <- blpop [(BS.pack (redisQueue c))] 0
+  case res of
+    Left r -> return Nothing
+    Right r -> case r of
+                 Nothing -> return Nothing
+                 Just value -> return $ Just $ snd value
+  
+-- Pattern matching wrapper
+-- TODO: retrieve status
+sendPush :: Config -> (BS.ByteString, BS.ByteString) -> IO ()
+sendPush config (token, payload) = Push.sendAPNS (certificate config) (key config) token payload
+
+-- TODO: retrieve status
+listener :: Config -> Connection -> IO ()
+listener config redisconn = do
+  payload <- loadPayload redisconn
+  
+  case payload of
+    Nothing -> putStrLn "Failed to load notification payload from Redis."
+    Just p -> map (sendPush config) (processPayload p)
+  
+  listener config redisconn
+  
+main :: IO ()
+main = do
+  config <- loadConfigFile "config.json"
+  
+  case config of
+    Nothing -> putStrLn "Invalid configuration."
     Just cnf -> do
       putStrLn ("Connected to Redis @ " ++ (redisServer cnf) ++ " on queue '" ++ (redisQueue cnf) ++ "'")
       redisconn <- connect $ defaultConnectInfo { connectHost = (redisServer cnf) }
-      cert <- fileReadCertificate (certificate cnf)
-      key <- fileReadPrivateKey (key cnf)
-      
-      let apnsConfig = def {
-                        apnsCertificate = cert,
-                        apnsPrivateKey  = key,
-                        environment     = Local
-                      }
-      
-      manager <- startAPNS apnsConfig
-      listenPusherman redisconn manager
-      closeAPNS manager
-      
+      listener cnf redisconn

@@ -36,8 +36,8 @@ getHourExpiryTime = do
   pt <- Data.Time.Clock.POSIX.getPOSIXTime
   return ( (round pt + 60*60):: Word32)
   
-socketWithKeypair :: FilePath -> FilePath -> IO SSL
-socketWithKeypair certificateFile keyFile = do
+socketWithKeypair :: FilePath -> FilePath -> String -> Integer -> IO SSL
+socketWithKeypair certificateFile keyFile host port = do
   -- setup ssl context
   ssl <- OpenSSL.Session.context
   OpenSSL.Session.contextSetPrivateKeyFile ssl certificateFile
@@ -47,19 +47,12 @@ socketWithKeypair certificateFile keyFile = do
 
   -- Open SSL socket
   proto <- Network.BSD.getProtocolNumber "tcp"
-  he <- Network.BSD.getHostByName "gateway.push.apple.com"
+  he <- Network.BSD.getHostByName host
   sock <- socket AF_INET Stream proto
-  Network.Socket.connect sock (SockAddrInet 2195 (hostAddress he))
+  Network.Socket.connect sock (SockAddrInet port (hostAddress he))
   
   sslsocket <- OpenSSL.Session.connection ssl sock
   return $ sslsocket
-  
-readSSL :: SSL -> Int -> IO B.Bytestring
-readSSL sslsocket len = do
-  OpenSSL.Session.connect sslsocket
-  bytes <- OpenSSL.Session.read sslsocket len
-  OpenSSL.Session.shutdown sslsocket Unidirectional
-  return $ bytes
   
 writeSSL :: SSL -> B.ByteString -> IO ()
 writeSSL sslsocket str = do
@@ -67,9 +60,15 @@ writeSSL sslsocket str = do
   OpenSSL.Session.write sslsocket str
   OpenSSL.Session.shutdown sslsocket Unidirectional
   
+readFeedback :: FilePath -> FilePath -> (SSL -> IO [(B.ByteString, B.ByteString)]) -> IO [(B.ByteString, B.ByteString)]
+readFeedback certificateFile keyFile parsefunc = withOpenSSL $ do
+  sslsocket <- socketWithKeypair certificateFile keyFile "feedback.push.apple.com" 2196
+  parsed <- parsefunc sslsocket
+  return $ parsed
+  
 sendAPNS :: FilePath -> FilePath -> String -> String -> IO ()
 sendAPNS certificateFile keyFile token json = withOpenSSL $ do
-  sslsocket <- socketWithKeypair certificateFile keyFile
+  sslsocket <- socketWithKeypair certificateFile keyFile "gateway.push.apple.com" 2195
   expiration <- getHourExpiryTime
   
   writeSSL sslsocket (toStrict $ runPut $ buildPDU (hexToByteString token) (BU.fromString json) expiration)
