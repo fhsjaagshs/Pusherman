@@ -36,16 +36,36 @@ data Notification = Notification {
 instance FromJSON Config
 instance FromJSON Notification
 
-generateNotif :: [(String, JSON.JSValue)] -> [(String, JSON.JSValue)]
-generateNotif [] = []
-generateNotif (x:xs) = case (snd x) of
-                        JSON.JSObject o -> Prelude.foldr (:) (JSON.fromJSObject o) (generateNotif xs)
-                        otherwise -> x:(generateNotif xs)
+-- buildAPSBody :: [(String, JSON.JSValue)] -> [(String, JSON.JSValue)]
+-- buildAPSBody [] = []
+-- buildAPSBody (x:xs)
+--   | (fst x) == "tokens" = (buildAPSBody xs)
+--   | (fst x) == "data" = (buildAPSBody xs)
+--   | otherwise = case (snd x) of
+--                         JSON.JSObject o -> Prelude.foldr (:) (JSON.fromJSObject o) (buildAPSBody xs)
+--                         otherwise -> x:(buildAPSBody xs)
+--
+-- buildAPNSPayload :: String -> Maybe String
+-- buildAPNSPayload input = case JSON.decode input of
+--                             JSON.Ok a -> Just $ "{\"aps\":" ++ (JSON.encode (JSON.toJSObject (buildAPSBody (JSON.fromJSObject a)))) ++ "}"
+--                             JSON.Error e -> Nothing
 
-buildAPNSPayload :: String -> Maybe String
-buildAPNSPayload input = case JSON.decode input of
-                            JSON.Ok a -> Just $ "{\"aps\":" ++ (JSON.encode (JSON.toJSObject (generateNotif (JSON.fromJSObject a)))) ++ "}"
+buildAPSBody :: [(String, JSON.JSValue)] -> [(String, JSON.JSValue)]
+buildAPSBody [] = []
+buildAPSBody (x:xs)
+  | (fst x) == "tokens" = (buildAPSBody xs)
+  | (fst x) == "data" = (buildAPSBody xs)
+  | otherwise = case (snd x) of
+                  JSON.JSObject o -> Prelude.foldr (:) (JSON.fromJSObject o) (buildAPSBody xs)
+                  otherwise -> x:(buildAPSBody xs)
+
+buildPushPayload :: String -> Maybe String
+buildPushPayload json = case JSON.decode json of
                             JSON.Error e -> Nothing
+                            JSON.Ok (JSON.JSObject a) -> case JSON.valFromObj "data" a of
+                                                          JSON.Error err -> Just $ JSON.encode $ JSON.toJSObject $ [("aps", JSON.JSObject (JSON.toJSObject (buildAPSBody (JSON.fromJSObject a))))]
+                                                          JSON.Ok d -> Just $ JSON.encode $ JSON.toJSObject $ ("aps", JSON.JSObject (JSON.toJSObject (buildAPSBody (JSON.fromJSObject a)))):(JSON.fromJSObject d)
+                            otherwise -> Nothing
                             
 getTokens :: String -> Maybe [String]
 getTokens json = case JSON.decode json of
@@ -71,16 +91,6 @@ getTokens json = case JSON.decode json of
   --   if
   --   return $ (fromIntegral timestamp, token)
 
-  --
-  --   toJSObject [("aps", JSObject (toJSObject [
-  --                 ("alert", JSString (toJSString msg)),
-  --                 ("sound", JSString (toJSString badge)),
-  --                 ("badge", )
-  --               ]))]
-  --
-  
-  --[("0805ab2e45ceddbbb5b83597a1f45fddd93708e1d107de34d5a3e71b6434232a", input)]
-
 -- Gets a payload from Redis
 loadPayload :: Connection -> String -> IO (Maybe String)
 loadPayload redisconn queue = runRedis redisconn $ do
@@ -103,7 +113,7 @@ listener config redisconn = do
   
   case fromRedis of
     Nothing -> putStrLn "Failed to load notification payload from Redis."
-    Just res -> mapM_ (sendPush config (processPayload p)) getTokens res
+    Just res -> mapM_ (sendPush config (fromJust (buildPushPayload res))) (fromJust (getTokens res))
   
   listener config redisconn
   
