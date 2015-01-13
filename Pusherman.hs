@@ -2,11 +2,13 @@
 
 import Push
 
+import qualified Text.JSON as JSON
+
 import Data.Aeson
 import Data.Functor
 import Data.Maybe
 import qualified Data.Text as TXT
-import qualified Data.HashSet as HST
+--import qualified Data.HashSet as HST
 import qualified Data.ByteString.Char8 as BS
 
 import GHC.Generics
@@ -16,19 +18,6 @@ import Control.Monad
 import Control.Monad.IO.Class
 
 import Database.Redis
-
--- generatePayloadJSON :: String -> String -> Integer -> JSObject (JSValue)
--- generatePayloadJSON alert sound badge =
---
-
--- getJSONWithMessage :: String -> JSObject (JSValue)
--- getJSONWithMessage msg =
---   let jmsg = JSString (toJSString msg) in
---   toJSObject [("aps", JSObject (toJSObject [
---                 ("alert", JSString (toJSString msg)),
---                 ("sound", JSString (toJSString badge)),
---                 ("badge", )
---               ]))]
 
 data Config = Config { 
   certificate :: !FilePath,
@@ -47,6 +36,24 @@ data Notification = Notification {
 instance FromJSON Config
 instance FromJSON Notification
 
+generateNotif :: [(String, JSON.JSValue)] -> [(String, JSON.JSValue)]
+generateNotif [] = []
+generateNotif (x:xs) = case (snd x) of
+                        JSON.JSObject o -> Prelude.foldr (:) (JSON.fromJSObject o) (generateNotif xs)
+                        otherwise -> x:(generateNotif xs)
+
+buildAPNSPayload :: String -> Maybe String
+buildAPNSPayload input = case JSON.decode input of
+                            JSON.Ok a -> Just $ "{\"aps\":" ++ (JSON.encode (JSON.toJSObject (generateNotif (JSON.fromJSObject a)))) ++ "}"
+                            JSON.Error e -> Nothing
+                            
+getTokens :: String -> Maybe [String]
+getTokens json = case JSON.decode json of
+                  JSON.Error e -> Nothing
+                  JSON.Ok (JSON.JSObject a) -> case JSON.valFromObj "tokens" a of
+                                                JSON.Error e -> Nothing
+                                                JSON.Ok a -> Just $ map JSON.fromJSString a
+
 -- parseFeedback :: SSL -> Get [(B.ByteString, B.ByteString)] -- (timestamp, token)
 -- parseFeedback ssl = do
 --   OpenSSL.Session.connect sslsocket
@@ -64,33 +71,39 @@ instance FromJSON Notification
   --   if
   --   return $ (fromIntegral timestamp, token)
 
--- transforms the JSON from Redis to an APNS payload
-processPayload :: String -> [(String, String)]
-processPayload input = [("0805ab2e45ceddbbb5b83597a1f45fddd93708e1d107de34d5a3e71b6434232a", input)]
+  --
+  --   toJSObject [("aps", JSObject (toJSObject [
+  --                 ("alert", JSString (toJSString msg)),
+  --                 ("sound", JSString (toJSString badge)),
+  --                 ("badge", )
+  --               ]))]
+  --
+  
+  --[("0805ab2e45ceddbbb5b83597a1f45fddd93708e1d107de34d5a3e71b6434232a", input)]
 
 -- Gets a payload from Redis
 loadPayload :: Connection -> String -> IO (Maybe String)
 loadPayload redisconn queue = runRedis redisconn $ do
-  res <- blpop [(BS.pack queue)] 0
+  res <- brpop [(BS.pack queue)] 0
   case res of
     Left r -> return Nothing
     Right r -> case r of
                  Nothing -> return Nothing
                  Just value -> return $ Just (BS.unpack(snd value))
 
--- Pattern matching wrapper
--- TODO: retrieve status
-sendPush :: Config -> (String, String) -> IO ()
-sendPush config (token, payload) = Push.sendAPNS (certificate config) (key config) token payload
+sendPush :: Config -> String -> String -> IO ()
+sendPush config json token = do
+  -- TODO: Log this shit
+  Push.sendAPNS (certificate config) (key config) token json
 
 -- TODO: retrieve status
 listener :: Config -> Connection -> IO ()
 listener config redisconn = do
-  payload <- loadPayload redisconn (redisQueue config)
+  fromRedis <- loadPayload redisconn (redisQueue config)
   
-  case payload of
+  case fromRedis of
     Nothing -> putStrLn "Failed to load notification payload from Redis."
-    Just p -> mapM_ (sendPush config) (processPayload p)
+    Just res -> mapM_ (sendPush config (processPayload p)) getTokens res
   
   listener config redisconn
   
