@@ -5,6 +5,8 @@
 --    the Haskell String is slow
 -- 2. Disable concurrent feedback processing when
 --    there is no place to put it (log, webhook)
+-- 3. Rewrite feedback processing so that it's not
+--    a constant loop and waits between hits.
 
 import qualified Push
 
