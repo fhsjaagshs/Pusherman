@@ -8,6 +8,8 @@ import GHC.Generics
 import qualified Text.JSON as JSON
 import qualified Data.Aeson as Aeson
 
+import System.Environment
+
 import qualified Data.Time.Clock.POSIX as Clock
 
 import qualified Data.ByteString.Char8 as BS
@@ -81,10 +83,16 @@ processFeedback :: Config -> (Integer, String) -> IO ()
 processFeedback cnf (timestamp, token) = do
   BS.appendFile (feedbackLogFile cnf) (BS.pack ((show timestamp) ++ "\t" ++ (show token) ++ "\n"))
   
+getConfigFile :: IO String
+getConfigFile = do
+  args <- getArgs
+  if (length args) == 0 then return "config.json"
+  else return $ head args
+  
 main :: IO ()
 main = do
-  -- TODO: Implement command line args
-  s <- BS.readFile "config.json"
+  configFile <- getConfigFile
+  s <- BS.readFile configFile
   case Aeson.decodeStrict s of
     Nothing -> putStrLn "Invalid configuration."
     Just cnf -> do

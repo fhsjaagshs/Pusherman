@@ -1,1 +1,1 @@
-{"certificate":"production-push.crt","key":"production-push.key","redisServer":"localhost","redisQueue":"myqueue","notifLogFile":"push.log","feedbackLogFile":"feedback.log"}
+{"certificate":"production-push.crt","key":"production-push.key","redisServer":"localhost","redisQueue":"notifications","notifLogFile":"push.log","feedbackLogFile":"feedback.log"}
