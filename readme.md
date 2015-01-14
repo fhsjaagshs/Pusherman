@@ -47,4 +47,8 @@ Running
 It's as simple as running the executable, after all, this is Haskell and not someting like Ruby.
 
     $ ./Pusherman
+    
+Or, if you want to specify where the config file is (it should still be in the same format)
+
+    $ ./Pusherman myconfig.json
 
