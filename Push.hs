@@ -1,11 +1,13 @@
 module Push (
   sendAPNS,
+  readFeedback
 ) where
 
 import Hex
 
 import Data.Attoparsec.Char8 as Attoparsec
 
+import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString as B
 import qualified Data.ByteString.UTF8 as BU
@@ -24,14 +26,10 @@ import OpenSSL.Session
 
 getFeedback :: Get (Integer, B.ByteString)
 getFeedback = do
-    isE <- isEmpty
-    
-    if isE then do return $ (-1, BS.pack "<invalid_entry>")
-    else do
-      timestampIntegral <- getWord32be
-      tokenLengthIntegral <- getWord16be
-      token <- getByteString $ fromIntegral tokenLengthIntegral
-      return $ (fromIntegral timestampIntegral, token)
+  time <- getWord32be
+  len <- getWord16be
+  dtoken <- getBytes $ convert len
+  return (posixSecondsToUTCTime $ fromInteger $ convert time, B16.encode dtoken)
   
 buildPDU :: B.ByteString -> BU.ByteString -> Word32 -> Put
 buildPDU token payload expiry
@@ -83,6 +81,7 @@ readFeedbackRecur sslsocket callback = do
   callback (runGet readStr getFeedback)
     
   OpenSSL.Session.shutdown sslsocket Unidirectional
+  
   readFeedbackRecur sslsocket callback
   
   
