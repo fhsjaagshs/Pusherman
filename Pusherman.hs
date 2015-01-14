@@ -4,6 +4,7 @@ import qualified Push
 
 import Data.Maybe
 import GHC.Generics
+import Control.Concurrent
 
 import qualified Text.JSON as JSON
 import qualified Data.Aeson as Aeson
@@ -81,7 +82,6 @@ listener config redisconn = do
     Nothing -> putStrLn "Failed to load notification payload from Redis."
     Just res -> mapM_ (sendPush config (fromJust (buildPushPayload res))) (fromJust (getTokens res))
   
-  Push.readFeedback (certificate config) (key config) (processFeedback config)
   listener config redisconn
   
 callWebhook :: String -> String -> Integer -> IO ()
@@ -91,8 +91,14 @@ callWebhook url token timestamp = do
   withManager $ httpNoBody req
   return ()
   
+feedbackListener :: Config -> IO ()
+feedbackListener config = do
+  Push.readFeedback (certificate config) (key config) (processFeedback config)
+  feedbackListener config
+  
 processFeedback :: Config -> (Integer, String) -> IO ()
 processFeedback cnf (timestamp, token) = do
+  
   case (feedbackLogFile cnf) of
     Nothing -> return ()
     Just fp -> BS.appendFile fp (BS.pack ((show timestamp) ++ "\t" ++ (show token) ++ "\n"))
@@ -114,6 +120,8 @@ main = do
   case Aeson.decodeStrict s of
     Nothing -> putStrLn "Invalid configuration."
     Just cnf -> do
+      forkIO (feedbackListener cnf)
+        
       putStrLn ("Connected to Redis @ " ++ (redisServer cnf) ++ " on queue '" ++ (redisQueue cnf) ++ "'")
       redisconn <- connect $ defaultConnectInfo { connectHost = (redisServer cnf) }
       listener cnf redisconn
