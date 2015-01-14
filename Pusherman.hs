@@ -16,14 +16,16 @@ import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy as BL
 
 import Database.Redis as Redis
+import Network.HTTP.Client.Conduit
 
 data Config = Config { 
   certificate :: !FilePath,
   key :: !FilePath,
   redisServer :: !String, -- I know how slow these haskell Strings are...
   redisQueue :: !String,
-  notifLogFile :: !FilePath,
-  feedbackLogFile :: !FilePath
+  notifLogFile :: Maybe FilePath,
+  feedbackLogFile :: Maybe FilePath,
+  webhook :: Maybe String
 } deriving (Show,Generic)
 
 instance Aeson.FromJSON Config
@@ -65,7 +67,10 @@ loadPayload redisconn queue = runRedis redisconn $ do
 sendPush :: Config -> String -> String -> IO ()
 sendPush config json token = do
   -- TODO: Log this shit
-  BS.appendFile (notifLogFile config) (BS.pack (token ++ "\t" ++ json ++ "\n"))
+  case (notifLogFile config) of
+    Nothing -> return ()
+    Just fp -> BS.appendFile fp (BS.pack (token ++ "\t" ++ json ++ "\n"))
+    
   Push.sendAPNS (certificate config) (key config) token json
 
 listener :: Config -> Connection -> IO ()
@@ -79,9 +84,22 @@ listener config redisconn = do
   Push.readFeedback (certificate config) (key config) (processFeedback config)
   listener config redisconn
   
+callWebhook :: String -> String -> Integer -> IO ()
+callWebhook url token timestamp = do
+  initReq <- parseUrl url
+  let req = (flip urlEncodedBody) initReq { method = "POST" } $ [("token", BS.pack token), ("timestamp", BS.pack (show timestamp))]
+  withManager $ httpNoBody req
+  return ()
+  
 processFeedback :: Config -> (Integer, String) -> IO ()
 processFeedback cnf (timestamp, token) = do
-  BS.appendFile (feedbackLogFile cnf) (BS.pack ((show timestamp) ++ "\t" ++ (show token) ++ "\n"))
+  case (feedbackLogFile cnf) of
+    Nothing -> return ()
+    Just fp -> BS.appendFile fp (BS.pack ((show timestamp) ++ "\t" ++ (show token) ++ "\n"))
+    
+  case (webhook cnf) of
+    Nothing -> return ()
+    Just url -> callWebhook url token timestamp
   
 getConfigFile :: IO String
 getConfigFile = do

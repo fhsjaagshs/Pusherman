@@ -18,8 +18,9 @@ Then, create a file called `config.json` in the same directory as the `Pusherman
       "key": "production-push.key",
       "redisServer": "localhost",
       "redisQueue": "notifications",
-      "notifLogFile": "push.log",
-      "feedbackLogFile": "feedback.log"
+      "notifLogFile": "push.log", // optional
+      "feedbackLogFile": "feedback.log" // optional
+      "webhook": "http://localhost:8080/" // optional
     }
 
 Pusherman reads payloads from Redis: they should look something like this:
@@ -52,3 +53,7 @@ Or, if you want to specify where the config file is (it should still be in the s
 
     $ ./Pusherman myconfig.json
 
+Webhooks
+-
+
+A webhook URL should be able to respond to a POST request on the URL from the configuration. It takes the parameters `timestamp` and `token`.
