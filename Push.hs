@@ -4,10 +4,14 @@ module Push (
 
 import Hex
 
+import Data.Attoparsec.Char8 as Attoparsec
+
+import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString as B
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.ByteString.Lazy as BL
 import Data.Binary.Put
+import Data.Binary.Get
 import GHC.Word
 import Data.Convertible
 
@@ -17,6 +21,17 @@ import Network.Socket
 import Network.BSD
 import OpenSSL
 import OpenSSL.Session
+
+getFeedback :: Get (Integer, B.ByteString)
+getFeedback = do
+    isE <- isEmpty
+    
+    if isE then do return $ (-1, BS.pack "<invalid_entry>")
+    else do
+      timestampIntegral <- getWord32be
+      tokenLengthIntegral <- getWord16be
+      token <- getByteString $ fromIntegral tokenLengthIntegral
+      return $ (fromIntegral timestampIntegral, token)
   
 buildPDU :: B.ByteString -> BU.ByteString -> Word32 -> Put
 buildPDU token payload expiry
@@ -60,12 +75,22 @@ writeSSL sslsocket str = do
   OpenSSL.Session.write sslsocket str
   OpenSSL.Session.shutdown sslsocket Unidirectional
   
-readFeedback :: FilePath -> FilePath -> (SSL -> IO [(B.ByteString, B.ByteString)]) -> IO [(B.ByteString, B.ByteString)]
-readFeedback certificateFile keyFile parsefunc = withOpenSSL $ do
+readFeedbackRecur :: SSL -> ((Integer, B.ByteString) -> IO ()) -> IO ()
+readFeedbackRecur sslsocket callback = do
+  OpenSSL.Session.connect sslsocket
+  readStr <- OpenSSL.Session.read sslsocket 38 -- 38 is the length of the feedback payload.
+  
+  callback (runGet readStr getFeedback)
+    
+  OpenSSL.Session.shutdown sslsocket Unidirectional
+  readFeedbackRecur sslsocket callback
+  
+  
+readFeedback :: FilePath -> FilePath -> ((Integer, B.ByteString) -> IO ()) -> IO ()
+readFeedback certificateFile keyFile callback = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "feedback.push.apple.com" 2196
-  parsed <- parsefunc sslsocket
-  return $ parsed
-
+  readFeedbackRecur sslsocket callback
+  
 sendAPNS :: FilePath -> FilePath -> String -> String -> IO ()
 sendAPNS certificateFile keyFile token json = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "gateway.push.apple.com" 2195
@@ -74,6 +99,4 @@ sendAPNS certificateFile keyFile token json = withOpenSSL $ do
   writeSSL sslsocket (toStrict $ runPut $ buildPDU (hexToByteString token) (BU.fromString json) expiration)
   where
     toStrict = B.concat . BL.toChunks
-    
--- TODO: Write function to read feedback
     
