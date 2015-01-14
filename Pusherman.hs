@@ -4,15 +4,12 @@ import qualified Push
 
 import Data.Maybe
 import GHC.Generics
-import Control.Applicative
-import Control.Monad
-import Control.Monad.IO.Class
-import Control.Concurrent
 
 import qualified Text.JSON as JSON
-import qualified Data.Time.Clock.POSIX as Clock
 import qualified Data.Aeson as Aeson
-import qualified Data.Text as TXT
+
+import qualified Data.Time.Clock.POSIX as Clock
+
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy as BL
 
@@ -82,7 +79,7 @@ listener config redisconn = do
   
 processFeedback :: Config -> (Integer, String) -> IO ()
 processFeedback cnf (timestamp, token) = do
-  liftIO $ BS.appendFile (feedbackLogFile cnf) (BS.pack ((show timestamp) ++ "\t" ++ (show token) ++ "\n"))
+  BS.appendFile (feedbackLogFile cnf) (BS.pack ((show timestamp) ++ "\t" ++ (show token) ++ "\n"))
   
 main :: IO ()
 main = do

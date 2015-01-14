@@ -74,7 +74,7 @@ writeSSL sslsocket str = do
 
 parseAndCall :: BL.ByteString -> ((Integer, String) -> IO ()) -> IO ()
 parseAndCall readStr callback
-  | (BL.length readStr) < 1 = print "no feedback"
+  | (BL.length readStr) < 1 = do return ()
   | otherwise = callback (runGet getFeedback readStr)
   
 -- parseAndCall Data.ByteString.singleton _ = do print "no feedback"
