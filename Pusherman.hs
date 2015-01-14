@@ -7,12 +7,14 @@ import GHC.Generics
 import Control.Applicative
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Concurrent
 
 import qualified Text.JSON as JSON
 import qualified Data.Time.Clock.POSIX as Clock
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as TXT
 import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Lazy as BL
 
 import Database.Redis as Redis
 
@@ -64,7 +66,7 @@ loadPayload redisconn queue = runRedis redisconn $ do
 sendPush :: Config -> String -> String -> IO ()
 sendPush config json token = do
   -- TODO: Log this shit
-  BS.appendFile (notifLogFile config) (BS.pack (json ++ "hello!"))
+  BS.appendFile (notifLogFile config) (BS.pack (token ++ "\t" ++ json ++ "\n"))
   Push.sendAPNS (certificate config) (key config) token json
 
 listener :: Config -> Connection -> IO ()
@@ -75,11 +77,12 @@ listener config redisconn = do
     Nothing -> putStrLn "Failed to load notification payload from Redis."
     Just res -> mapM_ (sendPush config (fromJust (buildPushPayload res))) (fromJust (getTokens res))
   
+  Push.readFeedback (certificate config) (key config) (processFeedback config)
   listener config redisconn
   
-processFeedback :: Config -> (Integer, BS.ByteString) -> IO ()
+processFeedback :: Config -> (Integer, String) -> IO ()
 processFeedback cnf (timestamp, token) = do
-  liftIO $ BS.appendFile (feedbackLogFile cnf) (BS.pack ((show timestamp) ++ "," ++ (show token) ++ "\t")
+  liftIO $ BS.appendFile (feedbackLogFile cnf) (BS.pack ((show timestamp) ++ "\t" ++ (show token) ++ "\n"))
   
 main :: IO ()
 main = do
@@ -90,9 +93,4 @@ main = do
     Just cnf -> do
       putStrLn ("Connected to Redis @ " ++ (redisServer cnf) ++ " on queue '" ++ (redisQueue cnf) ++ "'")
       redisconn <- connect $ defaultConnectInfo { connectHost = (redisServer cnf) }
-      forkIO $ do 
-        Push.readFeedback (certificate cnf) (key conf) (processFeedback cnf)
-        readFeedback :: FilePath -> FilePath -> ((B.ByteString, B.ByteString) -> ()) -> IO ()
-        readFeedback certificateFile keyFile callback = withOpenSSL $ do
-      putStrLn "After thingy"
       listener cnf redisconn

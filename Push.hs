@@ -5,12 +5,11 @@ module Push (
 
 import Hex
 
-import Data.Attoparsec.Char8 as Attoparsec
-
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString as B
 import qualified Data.ByteString.UTF8 as BU
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
 import Data.Binary.Put
 import Data.Binary.Get
@@ -24,13 +23,13 @@ import Network.BSD
 import OpenSSL
 import OpenSSL.Session
 
-getFeedback :: Get (Integer, B.ByteString)
+getFeedback :: Get (Integer, String)
 getFeedback = do
   time <- getWord32be
   len <- getWord16be
-  dtoken <- getBytes $ convert len
-  return (posixSecondsToUTCTime $ fromInteger $ convert time, B16.encode dtoken)
-  
+  dtoken <- getByteString $ convert len
+  return (fromIntegral time, BS.unpack $ B16.encode dtoken)
+    
 buildPDU :: B.ByteString -> BU.ByteString -> Word32 -> Put
 buildPDU token payload expiry
   | (B.length token) /= 32 = fail "Invalid token"
@@ -47,7 +46,7 @@ buildPDU token payload expiry
 getHourExpiryTime :: IO (Word32)
 getHourExpiryTime = do
   pt <- Data.Time.Clock.POSIX.getPOSIXTime
-  return ( (round pt + 60*60):: Word32)
+  return ( (round pt + 60*60) :: Word32)
   
 socketWithKeypair :: FilePath -> FilePath -> String -> PortNumber -> IO SSL
 socketWithKeypair certificateFile keyFile host port = do
@@ -65,37 +64,37 @@ socketWithKeypair certificateFile keyFile host port = do
   Network.Socket.connect sock (SockAddrInet port (hostAddress he))
   
   sslsocket <- OpenSSL.Session.connection ssl sock
-  return $ sslsocket
+  return sslsocket
   
 writeSSL :: SSL -> B.ByteString -> IO ()
 writeSSL sslsocket str = do
   OpenSSL.Session.connect sslsocket
   OpenSSL.Session.write sslsocket str
   OpenSSL.Session.shutdown sslsocket Unidirectional
+
+parseAndCall :: BL.ByteString -> ((Integer, String) -> IO ()) -> IO ()
+parseAndCall readStr callback
+  | (BL.length readStr) < 1 = print "no feedback"
+  | otherwise = callback (runGet getFeedback readStr)
   
-readFeedbackRecur :: SSL -> ((Integer, B.ByteString) -> IO ()) -> IO ()
-readFeedbackRecur sslsocket callback = do
-  OpenSSL.Session.connect sslsocket
-  readStr <- OpenSSL.Session.read sslsocket 38 -- 38 is the length of the feedback payload.
+-- parseAndCall Data.ByteString.singleton _ = do print "no feedback"
+-- parseAndCall readStr callback = callback (runGet getFeedback (BL.fromStrict readStr))
   
-  callback (runGet readStr getFeedback)
-    
-  OpenSSL.Session.shutdown sslsocket Unidirectional
-  
-  readFeedbackRecur sslsocket callback
-  
-  
-readFeedback :: FilePath -> FilePath -> ((Integer, B.ByteString) -> IO ()) -> IO ()
+readFeedback :: FilePath -> FilePath -> ((Integer, String) -> IO ()) -> IO ()
 readFeedback certificateFile keyFile callback = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "feedback.push.apple.com" 2196
-  readFeedbackRecur sslsocket callback
+  OpenSSL.Session.connect sslsocket
+  readStr <- OpenSSL.Session.read sslsocket 38
+  
+  parseAndCall (BL.fromStrict readStr) callback
+  
+  OpenSSL.Session.shutdown sslsocket Unidirectional
   
 sendAPNS :: FilePath -> FilePath -> String -> String -> IO ()
 sendAPNS certificateFile keyFile token json = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "gateway.push.apple.com" 2195
   expiration <- getHourExpiryTime
   
+  let toStrict = B.concat . BL.toChunks
   writeSSL sslsocket (toStrict $ runPut $ buildPDU (hexToByteString token) (BU.fromString json) expiration)
-  where
-    toStrict = B.concat . BL.toChunks
     
