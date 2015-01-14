@@ -3,6 +3,8 @@
 -- TODO: FOR THE FUTURE
 -- 1. Replace all Strings with ByteStrings because
 --    the Haskell String is slow
+-- 2. Disable concurrent feedback processing when
+--    there is no place to put it (log, webhook)
 
 import qualified Push
 
