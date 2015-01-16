@@ -5,6 +5,9 @@ module Push (
 
 import Hex
 
+import Data.Text
+import Data.Text.Encoding
+
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString as B
@@ -30,7 +33,7 @@ getFeedback = do
   dtoken <- getByteString $ convert len
   return (fromIntegral time, BS.unpack $ B16.encode dtoken)
     
-buildPDU :: B.ByteString -> BU.ByteString -> Word32 -> Put
+buildPDU :: B.ByteString -> BU.ByteString -> Word32 -> Put -- second one is BU.ByteString
 buildPDU token payload expiry
   | (B.length token) /= 32 = fail "Invalid token"
   | (B.length payload > 255) = fail "Too long payload"
@@ -77,9 +80,6 @@ parseAndCall readStr callback
   | (BL.length readStr) < 1 = do return ()
   | otherwise = callback (runGet getFeedback readStr)
   
--- parseAndCall Data.ByteString.singleton _ = do print "no feedback"
--- parseAndCall readStr callback = callback (runGet getFeedback (BL.fromStrict readStr))
-  
 readFeedback :: FilePath -> FilePath -> ((Integer, String) -> IO ()) -> IO ()
 readFeedback certificateFile keyFile callback = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "feedback.push.apple.com" 2196
@@ -90,11 +90,11 @@ readFeedback certificateFile keyFile callback = withOpenSSL $ do
   
   OpenSSL.Session.shutdown sslsocket Unidirectional
   
-sendAPNS :: FilePath -> FilePath -> String -> String -> IO ()
+sendAPNS :: FilePath -> FilePath -> String -> Text -> IO ()
 sendAPNS certificateFile keyFile token json = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "gateway.push.apple.com" 2195
   expiration <- getHourExpiryTime
   
   let toStrict = B.concat . BL.toChunks
-  writeSSL sslsocket (toStrict $ runPut $ buildPDU (hexToByteString token) (BU.fromString json) expiration)
+  writeSSL sslsocket (toStrict $ runPut $ buildPDU (hexToByteString token) (encodeUtf8 json) expiration)
     
