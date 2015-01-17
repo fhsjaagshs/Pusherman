@@ -94,7 +94,7 @@ sendAPNS :: FilePath -> FilePath -> String -> Text -> IO ()
 sendAPNS certificateFile keyFile token json = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "gateway.push.apple.com" 2195
   expiration <- getHourExpiryTime
-  
+
   let toStrict = B.concat . BL.toChunks
-  writeSSL sslsocket (toStrict $ runPut $ buildPDU (hexToByteString token) (encodeUtf8 json) expiration)
+  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (hexToByteString token) (encodeUtf8 json) expiration)
     
