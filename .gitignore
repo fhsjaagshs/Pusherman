@@ -1,2 +1,5 @@
 production-push.crt
 production-push.key
+*.o
+*.hi
+*.log

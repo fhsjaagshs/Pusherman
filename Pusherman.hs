@@ -14,18 +14,18 @@ import qualified Zedis
 import Data.Maybe
 import GHC.Generics
 import Control.Concurrent
+import Control.Lens
 
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Lens as Aeson.Lens
-import Control.Lens
 
-import System.IO-- as SystemIO
+import System.IO
 import System.Environment as Environment
 
 import qualified Data.Time.Clock.POSIX as Clock
 
 import Data.Text as Text
-import Data.Text.Encoding
+import qualified Data.Text.Encoding as Text.Encoding
 import qualified Data.Text.IO as Text.IO
 
 import qualified Data.ByteString as B
@@ -61,7 +61,7 @@ generatePayload json = do
   let parsed = Aeson.decodeStrict json
   case parsed of
     Nothing -> Nothing
-    Just (Aeson.Object parsedObject) -> Just $ (Prelude.map Data.Text.Encoding.encodeUtf8 (getTokens parsed), BS.concat . BL.toChunks $ Aeson.encode $ fromJust $ processPayload $ parsedObject)
+    Just (Aeson.Object parsedObject) -> Just $ (Prelude.map Text.Encoding.encodeUtf8 (getTokens parsed), BL.toStrict $ Aeson.encode $ fromJust $ processPayload $ parsedObject)
 
 -- APNS Notifications
 
@@ -69,16 +69,14 @@ sendPush :: Config -> B.ByteString -> B.ByteString -> IO ()
 sendPush config json token = do
   case (notifLogFile config) of
     Nothing -> return ()
-    Just fp -> writeLog fp ((BS.unpack token) ++ "\t" ++ (BS.unpack json))
+    Just fp -> writeLog fp (BS.append (BS.append token (BS.pack "\t")) json)
     
-  Push.sendAPNS (certificate config) (key config) (BS.unpack token) (Data.Text.Encoding.decodeUtf8 json)
+  Push.sendAPNS (certificate config) (key config) (BS.unpack token) (Text.Encoding.decodeUtf8 json)
 
 listener :: Config -> Zedis.RedisConnection -> IO ()
 listener config redisconn = do
   fromRedis <- Zedis.brpop redisconn (redisQueue config)
-  
-  print $ fromJust $ fromRedis
-  
+
   case fromRedis of
     Nothing -> putStrLn "Failed to load notification payload from Redis."
     Just res -> case generatePayload res of
@@ -110,7 +108,7 @@ processFeedback cnf (timestamp, token) = do
   
   case (feedbackLogFile cnf) of
     Nothing -> return ()
-    Just fp -> writeLog fp ((show timestamp) ++ "\t" ++ token)
+    Just fp -> writeLog fp (BS.pack ((show timestamp) ++ "\t" ++ token))
     
   case (webhook cnf) of
     Nothing -> return ()
@@ -118,14 +116,14 @@ processFeedback cnf (timestamp, token) = do
   
 -- Logging
   
-writeLog :: FilePath -> String -> IO ()
+writeLog :: FilePath -> B.ByteString -> IO ()
 writeLog filepath contents = do
   h <- System.IO.openFile filepath AppendMode
-  Text.IO.hPutStrLn h (Text.pack contents)
+  Text.IO.hPutStrLn h (Text.Encoding.decodeUtf8 contents)
   System.IO.hClose h
   
 -- Config reading
-  
+
 readConfigFile :: IO BS.ByteString
 readConfigFile = do
   fileP <- getConfigFile

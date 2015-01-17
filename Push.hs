@@ -3,14 +3,12 @@ module Push (
   readFeedback
 ) where
 
-import Hex
-
 import Data.Text
 import Data.Text.Encoding
 
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Char8 as BS
-import qualified Data.ByteString as B
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
@@ -95,6 +93,5 @@ sendAPNS certificateFile keyFile token json = withOpenSSL $ do
   sslsocket <- socketWithKeypair certificateFile keyFile "gateway.push.apple.com" 2195
   expiration <- getHourExpiryTime
 
-  let toStrict = B.concat . BL.toChunks
-  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (hexToByteString token) (encodeUtf8 json) expiration)
+  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode $ BC.pack token) (encodeUtf8 json) expiration)
     
