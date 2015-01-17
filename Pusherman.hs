@@ -10,26 +10,32 @@
 -- 4. Port Text.JSON to use Aeson
 
 import qualified Push
+import qualified Zedis
 
 import Data.Maybe
 import GHC.Generics
 import Control.Concurrent
 
-import qualified Text.JSON as JSON
+--import qualified Text.JSON as JSON
 import qualified Data.Aeson as Aeson
 
-import System.IO
+import System.IO-- as SystemIO
 import System.Environment as Environment
 
 import qualified Data.Time.Clock.POSIX as Clock
+
+import qualified Data.Vector as Vector
 
 import Data.Text as Text
 import Data.Text.Encoding
 import qualified Data.Text.IO as Text.IO
 
+import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BS
 
-import Database.Redis as Redis
+import qualified Data.HashMap.Strict as HM
+import qualified Data.ByteString.Lazy as BL
+
 import Network.HTTP.Client.Conduit
 
 data Config = Config {
@@ -46,65 +52,79 @@ instance Aeson.FromJSON Config
 
 -- Payload construction
 
-buildAPSBody :: [(String, JSON.JSValue)] -> [(String, JSON.JSValue)]
-buildAPSBody [] = []
-buildAPSBody (x:xs)
-  | (fst x) == "tokens" = (buildAPSBody xs)
-  | (fst x) == "data" = (buildAPSBody xs)
-  | otherwise = case (snd x) of
-                  JSON.JSObject o -> Prelude.foldr (:) (JSON.fromJSObject o) (buildAPSBody xs)
-                  otherwise -> x:(buildAPSBody xs)
-
-buildPushPayload :: String -> Maybe String
-buildPushPayload json = case JSON.decode json of
-                            JSON.Error e -> Nothing
-                            JSON.Ok (JSON.JSObject a) -> case JSON.valFromObj "data" a of
-                                                          JSON.Error err -> Just $ JSON.encode $ JSON.toJSObject $ [("aps", JSON.JSObject (JSON.toJSObject (buildAPSBody (JSON.fromJSObject a))))]
-                                                          JSON.Ok d -> Just $ JSON.encode $ JSON.toJSObject $ ("aps", JSON.JSObject (JSON.toJSObject (buildAPSBody (JSON.fromJSObject a)))):(JSON.fromJSObject d)
-                            otherwise -> Nothing
-                            
-getTokens :: String -> Maybe [String]
-getTokens json = case JSON.decode json of
-                  JSON.Error e -> Nothing
-                  JSON.Ok (JSON.JSObject a) -> case JSON.valFromObj "tokens" a of
-                                                JSON.Error e -> Nothing
-                                                JSON.Ok a -> Just $ Prelude.map JSON.fromJSString a
+-- buildAPSBody :: [(String, JSON.JSValue)] -> [(String, JSON.JSValue)]
+-- buildAPSBody [] = []
+-- buildAPSBody (x:xs)
+--   | (fst x) == "tokens" = (buildAPSBody xs)
+--   | (fst x) == "data" = (buildAPSBody xs)
+--   | otherwise = case (snd x) of
+--                   JSON.JSObject o -> Prelude.foldr (:) (JSON.fromJSObject o) (buildAPSBody xs)
+--                   otherwise -> x:(buildAPSBody xs)
+--
+-- buildPushPayload :: String -> Maybe String
+-- buildPushPayload json = case JSON.decode json of
+--                             JSON.Error e -> Nothing
+--                             JSON.Ok (JSON.JSObject a) -> case JSON.valFromObj "data" a of
+--                                                           JSON.Error err -> Just $ JSON.encode $ JSON.toJSObject $ [("aps", JSON.JSObject (JSON.toJSObject (buildAPSBody (JSON.fromJSObject a))))]
+--                                                           JSON.Ok d -> Just $ JSON.encode $ JSON.toJSObject $ ("aps", JSON.JSObject (JSON.toJSObject (buildAPSBody (JSON.fromJSObject a)))):(JSON.fromJSObject d)
+--                             otherwise -> Nothing
+--
+-- getTokens :: String -> Maybe [String]
+-- getTokens json = case JSON.decode json of
+--                   JSON.Error e -> Nothing
+--                   JSON.Ok (JSON.JSObject a) -> case JSON.valFromObj "tokens" a of
+--                                                 JSON.Error e -> Nothing
+--                                                 JSON.Ok a -> Just $ Prelude.map JSON.fromJSString a
 
 -- Gets a payload from Redis
-loadPayload :: Connection -> String -> IO (Maybe String)
-loadPayload redisconn queue = runRedis redisconn $ do
-  eitherres <- brpop [BS.pack queue] 0
-  case eitherres of
-      Left errormsg -> return Nothing
-      Right res -> case res of
-                   Nothing -> return Nothing
-                   Just value -> return $ Just $ BS.unpack $ snd value
+-- loadPayload :: RedisConnection -> String -> IO (Maybe String)
+-- loadPayload redisconn queue = runRedis redisconn $ do
+--   eitherres <- brpop [BS.pack queue] 0
+--   case eitherres of
+--       Left errormsg -> return Nothing
+--       Right res -> case res of
+--                    Nothing -> return Nothing
+--                    Just value -> return $ Just $ BS.unpack $ snd value
+
+processPayload :: Aeson.Object -> Maybe Aeson.Object
+processPayload parsed = case HM.lookup (Text.pack "data") parsed of
+                          Nothing -> Nothing
+                          Just (Aeson.Object dataObj) -> Just $ HM.insert (Text.pack "aps") (Aeson.Object (HM.delete (Text.pack "data") (HM.delete (Text.pack "tokens") parsed))) dataObj
+
+generatePayload :: BS.ByteString -> Maybe ([BS.ByteString], BS.ByteString)
+generatePayload json = do
+  case Aeson.decodeStrict json of
+    Nothing -> Nothing
+    Just (Aeson.Object parsed) -> case HM.lookup (Text.pack "tokens") parsed of
+                                    Nothing -> Nothing
+                                    Just (Aeson.Array tokensArray) -> Just (
+                                                            Prelude.map (BS.concat . BL.toChunks . BL.init . BL.tail . Aeson.encode) (Vector.toList $ tokensArray),-- Prelude.map Data.Text.Encoding.encodeUtf8 (toList tokensArray),
+                                                            BS.concat . BL.toChunks $ Aeson.encode $ fromJust $ processPayload parsed
+                                                      )
 
 -- APNS Notifications
 
-sendPush :: Config -> String -> String -> IO ()
+sendPush :: Config -> B.ByteString -> B.ByteString -> IO ()
 sendPush config json token = do
-  -- TODO: Log this shit
   case (notifLogFile config) of
     Nothing -> return ()
-    Just fp -> writeLog fp (token ++ "\t" ++ json)
+    Just fp -> writeLog fp ((BS.unpack token) ++ "\t" ++ (BS.unpack json))
     
-  Push.sendAPNS (certificate config) (key config) token (Text.pack json)
+  Push.sendAPNS (certificate config) (key config) (BS.unpack token) (Data.Text.Encoding.decodeUtf8 json)
 
-listener :: Config -> Connection -> IO ()
+listener :: Config -> Zedis.RedisConnection -> IO ()
 listener config redisconn = do
-  fromRedis <- loadPayload redisconn (redisQueue config)
+  fromRedis <- Zedis.brpop redisconn (redisQueue config)
   
-  print $ Text.pack $ fromJust fromRedis
-  putStrLn "\n\n\n"
+  print $ fromJust $ fromRedis
   
   case fromRedis of
-    Nothing -> System.IO.putStrLn $ "Failed to load notification payload from Redis."
-    Just res -> case (buildPushPayload res) of
-                  Nothing -> System.IO.putStrLn $ "Failed to build push payload: " ++ (show res)
-                  Just pushPayload -> case (getTokens res) of
-                                        Nothing -> System.IO.putStrLn $ "Failed to extract tokens from payload: " ++ (show res)
-                                        Just tokens -> print pushPayload--if (tokens == []) then System.IO.putStrLn $ "No tokens to send payload to: " ++ (show res) else mapM_ (sendPush config pushPayload) tokens
+    Nothing -> putStrLn "Failed to load notification payload from Redis."
+    Just res -> case generatePayload res of
+                  Nothing -> putStrLn "Failed to generate APNS payload."
+                  Just payload -> mapM_ (sendPush config (snd payload)) (fst payload)
+    
+    
   
   listener config redisconn
   
@@ -169,7 +189,6 @@ main = do
     Left errormsg -> System.IO.putStrLn $ "Invalid configuration: " ++ errormsg
     Right cnf -> do
       forkIO $ feedbackListener cnf
-        
+      redisconn <- Zedis.connectRedis (redisServer cnf)
       System.IO.putStrLn $ "Connected to Redis @ " ++ (redisServer cnf) ++ " on list '" ++ (redisQueue cnf) ++ "'"
-      redisconn <- connect $ defaultConnectInfo { connectHost = (redisServer cnf) }
       listener cnf redisconn

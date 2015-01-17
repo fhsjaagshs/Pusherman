@@ -1,7 +1,8 @@
 module Zedis (
   connectRedis,
   disconnectRedis,
-  brpop
+  brpop,
+  RedisConnection(..)
 ) where
   
 import qualified Data.ByteString as B
@@ -40,39 +41,36 @@ disconnectRedis :: RedisConnection -> IO ()
 disconnectRedis conn = do
   shutdown (tcpSocket conn) ShutdownBoth
 
-readHeader :: Socket -> B.ByteString -> IO B.ByteString
-readHeader sock str
+readSection :: Socket -> IO B.ByteString
+readSection sock = do
+  res <- readSection' sock B.empty
+  return res
+
+readSection' :: Socket -> B.ByteString -> IO B.ByteString
+readSection' sock str
   | (BC.length str) == 0 = do
     p <- Network.Socket.ByteString.recv sock 1
-    res <- readHeader sock p
+    res <- readSection' sock p
     return res
-  | (BC.last str) == '\n' = do
-    return str
+  | (BC.last str) == '\n' = return $ B.init $ B.init $ str
   | otherwise = do
     p <- Network.Socket.ByteString.recv sock 1
-    readHeader sock (B.append str p)
+    readSection' sock (B.append str p)
 
 brpop :: RedisConnection -> String -> IO (Maybe B.ByteString)
 brpop conn list = do
   -- this line is a complete hack
   _ <- Network.Socket.ByteString.send (tcpSocket conn) (BC.pack ("*3\r\n$5\r\nbrpop\r\n$" ++ (show $ length list) ++ "\r\n" ++ list ++ "\r\n$1\r\n0\r\n"))
   
-  -- TODO:
-  -- Redis returns a 2-element array, not a bulk string
-  
-  firstChunk <- readHeader (tcpSocket conn) B.empty
-  
+  firstChunk <- readSection (tcpSocket conn)
+
   case BC.head firstChunk of
-    '-' -> return $ Just firstChunk
-    '$' -> do
-      let numBytes = (read $ BC.unpack $ B.tail firstChunk) :: Int
-  
-      case numBytes of
-        -1 -> return Nothing
-        0 -> return Nothing -- should return something, but I'm too tired
-        otherwise -> do
-          _ <- Network.Socket.ByteString.recv (tcpSocket conn) 2 -- skip CRLF
-          payload <- Network.Socket.ByteString.recv (tcpSocket conn) numBytes
-          return $ Just payload
-          
+    '-' -> return Nothing
+    '*' -> do
+      -- so is this shit
+      key <- readSection (tcpSocket conn)
+      _ <- readSection (tcpSocket conn)
+      _ <- readSection (tcpSocket conn)
+      payload <- readSection (tcpSocket conn)
+      return $ Just payload
     otherwise -> return $ Just firstChunk
