@@ -9,17 +9,28 @@ Setup
 
 Compile with
 
-    $ ghc -threaded Pusherman.hs
+    $ ghc -threaded pusherman.hs
+    
+It has the dependencies:
 
-Then, create a file called `config.json` in the same directory as the `Pusherman` binary. `config.json` should look something like:
+- hsopenssl
+- http-conduit
+- aeson
+- aeson-lens
+- network-bytestring
+- http-conduit
+- bytestring
+
+Then, create a file called `config.json` in the same directory as the `pusherman` binary. `config.json` should look something like:
 
     {
       "certificate": "production-push.crt",
       "key": "production-push.key",
-      "redisServer": "localhost",
-      "redisQueue": "notifications",
-      "notifLogFile": "push.log", // optional
-      "feedbackLogFile": "feedback.log" // optional
+      "redis_host": "localhost",
+      "redis_list": "notifications",
+      "push_log": "push.log" // optional
+      "feedback_log": "feedback.log" // optional
+      "error_log": "error.log" // optional
       "webhook": "http://localhost:8080/" // optional
     }
 
@@ -47,11 +58,11 @@ Running
 
 It's as simple as running the executable, after all, this is Haskell and not someting like Ruby.
 
-    $ ./Pusherman
+    $ ./pusherman
     
 Or, if you want to specify where the config file is (it should still be in the same format)
 
-    $ ./Pusherman myconfig.json
+    $ ./pusherman myconfig.json
 
 Webhooks
 -
