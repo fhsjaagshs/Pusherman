@@ -4,21 +4,18 @@ module Zedis (
   brpop,
   RedisConnection(..)
 ) where
-  
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BC
 
-import Network.Socket
 import Network.BSD
+import Network.Socket
 import Network.Socket.ByteString
 
-import GHC.Word
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC
 
 data RedisConnection = RedisConnection {
   redisHost :: String,
   redisPort :: Integer,
-  tcpSocket :: Socket,
-  connected :: Bool
+  tcpSocket :: Socket
 }
 
 connectRedis :: String -> IO RedisConnection
@@ -33,8 +30,7 @@ connectRedis host = do
   return RedisConnection {
     redisHost = host,
     redisPort = 6379,
-    tcpSocket = sock,
-    connected = True
+    tcpSocket = sock
   }
   
 disconnectRedis :: RedisConnection -> IO ()

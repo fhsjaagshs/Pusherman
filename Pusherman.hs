@@ -1,10 +1,7 @@
 -- TODO: FOR THE FUTURE
--- 1. Allow for an SSL context to be used multiple times,
---    decreasing the number of times the keypair must be read
--- 2. Disable concurrent feedback processing when
---    there is no place to put it (log, webhook)
--- 3. Rewrite feedback processing so that it's not
+-- 1. Rewrite feedback processing so that it's not
 --    a constant loop and waits between hits.
+-- 2. Notification throttling
 
 import qualified Push
 import qualified Zedis
@@ -15,26 +12,25 @@ import Control.Lens
 import Control.Monad
 import Control.Applicative
 
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Lens as Aeson.Lens
-
-import System.IO
-import System.Environment as Environment
-
-import Data.Text as Text
-import qualified Data.Text.Encoding as Text.Encoding
-import qualified Data.Text.IO as Text.IO
-
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BS
-
-import qualified Data.HashMap.Strict as HM
-import qualified Data.ByteString.Lazy as BL
-
 import Network.HTTP.Client.Conduit
 
 import OpenSSL
 import OpenSSL.Session
+
+import System.IO
+import System.Environment
+
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Lens as Aeson.Lens
+
+import qualified Data.Text as T
+import qualified Data.Text.IO as T.IO
+import qualified Data.Text.Encoding as T.Encoding
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Char8 as BS
+
+import qualified Data.HashMap.Strict as HM
 
 data Config = Config {
   certificate :: !FilePath,
@@ -58,31 +54,30 @@ createSSLContext cerFile keyFile = withOpenSSL $ do
   
 instance Aeson.FromJSON Config where
   parseJSON (Aeson.Object v) = Config <$>
-                                 v Aeson..:  (Text.pack "certificate") <*>
-                                 v Aeson..:  (Text.pack "key") <*>
-                                 v Aeson..:  (Text.pack "redis_host") <*>
-                                 v Aeson..:  (Text.pack "redis_list") <*>
-                                 v Aeson..:? (Text.pack "push_log") <*>
-                                 v Aeson..:? (Text.pack "feedback_log") <*>
-                                 v Aeson..:? (Text.pack "error_log") <*>
-                                 v Aeson..:? (Text.pack "webhook")
-                                 
+                                 v Aeson..:  (T.pack "certificate") <*>
+                                 v Aeson..:  (T.pack "key") <*>
+                                 v Aeson..:  (T.pack "redis_host") <*>
+                                 v Aeson..:  (T.pack "redis_list") <*>
+                                 v Aeson..:? (T.pack "push_log") <*>
+                                 v Aeson..:? (T.pack "feedback_log") <*>
+                                 v Aeson..:? (T.pack "error_log") <*>
+                                 v Aeson..:? (T.pack "webhook")
   parseJSON _ = mzero
 
 processPayload :: Aeson.Object -> Maybe Aeson.Object
-processPayload parsed = case HM.lookup (Text.pack "data") parsed of
+processPayload parsed = case HM.lookup (T.pack "data") parsed of
                           Nothing -> Nothing
-                          Just (Aeson.Object dataObj) -> Just $ HM.insert (Text.pack "aps") (Aeson.Object (HM.delete (Text.pack "data") (HM.delete (Text.pack "tokens") parsed))) dataObj
+                          Just (Aeson.Object dataObj) -> Just $ HM.insert (T.pack "aps") (Aeson.Object (HM.delete (T.pack "data") (HM.delete (T.pack "tokens") parsed))) dataObj
 
-getTokens :: Maybe Aeson.Value -> [Text.Text]
-getTokens decoded = decoded & catMaybes . toListOf (Aeson.Lens.key (Text.pack "tokens") . Aeson.Lens.traverseArray) :: [Text.Text]
+getTokens :: Maybe Aeson.Value -> [T.Text]
+getTokens decoded = decoded & catMaybes . toListOf (Aeson.Lens.key (T.pack "tokens") . Aeson.Lens.traverseArray) :: [T.Text]
 
 generatePayload :: BS.ByteString -> Maybe ([BS.ByteString], BS.ByteString)
 generatePayload json = do
   let parsed = Aeson.decodeStrict json
   case parsed of
     Nothing -> Nothing
-    Just (Aeson.Object parsedObject) -> Just $ (Prelude.map Text.Encoding.encodeUtf8 (getTokens parsed), BL.toStrict $ Aeson.encode $ fromJust $ processPayload $ parsedObject)
+    Just (Aeson.Object parsedObject) -> Just $ (Prelude.map T.Encoding.encodeUtf8 (getTokens parsed), BL.toStrict $ Aeson.encode $ fromJust $ processPayload $ parsedObject)
 
 -- APNS Notifications
 
@@ -92,7 +87,7 @@ sendPush ssl maybeLogFile json token = do
     Nothing -> BS.putStrLn (BS.append (BS.append token (BS.pack "\t")) json)
     Just fp -> writeLog fp (BS.append (BS.append token (BS.pack "\t")) json)
     
-  Push.sendAPNS ssl (BS.unpack token) (Text.Encoding.decodeUtf8 json)
+  Push.sendAPNS ssl (BS.unpack token) (T.Encoding.decodeUtf8 json)
 
 listener :: SSLContext -> Maybe FilePath -> Maybe FilePath -> Zedis.RedisConnection -> String -> IO ()
 listener ssl maybeLogFile maybeErrorLog redisconn redisQueue = do
@@ -142,7 +137,7 @@ processFeedback maybeFeedbackLog maybeWebhookUrl (timestamp, token) = do
 writeLog :: FilePath -> B.ByteString -> IO ()
 writeLog filepath contents = do
   h <- System.IO.openFile filepath AppendMode
-  Text.IO.hPutStrLn h (Text.Encoding.decodeUtf8 contents)
+  T.IO.hPutStrLn h (T.Encoding.decodeUtf8 contents)
   System.IO.hFlush h
   System.IO.hClose h
   
@@ -159,7 +154,7 @@ readConfigFile = do
   
 getConfigFile :: IO FilePath
 getConfigFile = do
-  args <- Environment.getArgs
+  args <- getArgs
   if (Prelude.length args) == 0 then return "config.json"
   else return $ Prelude.head args
   
@@ -173,8 +168,8 @@ main = do
     Right cnf -> do
       ssl <- createSSLContext (certificate cnf) (key cnf)
       redisconn <- Zedis.connectRedis (redisHost cnf)
-      
-      forkIO $ feedbackListener ssl (feedbackLog cnf) (webhook cnf)
+
+      -- forkIO $ feedbackListener ssl (feedbackLog cnf) (webhook cnf)
       
       System.IO.putStrLn $ "connected\t" ++ (redisHost cnf) ++ "\t" ++ (redisList cnf)
       

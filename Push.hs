@@ -1,11 +1,23 @@
 module Push (
   sendAPNS,
-  readFeedback,
-  buildSSLContext
+  readFeedback
 ) where
+  
+import GHC.Word
+import Data.Binary.Put
+import Data.Binary.Get
+import Data.Convertible
 
-import Data.Text
-import Data.Text.Encoding
+import Data.Time.Clock.POSIX
+
+import OpenSSL
+import OpenSSL.Session
+
+import Network.BSD
+import Network.Socket
+
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as T.Encoding
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Base16 as B16
@@ -13,17 +25,6 @@ import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.UTF8 as BU
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
-import Data.Binary.Put
-import Data.Binary.Get
-import GHC.Word
-import Data.Convertible
-
-import Data.Time.Clock.POSIX
-
-import Network.Socket
-import Network.BSD
-import OpenSSL
-import OpenSSL.Session
 
 getFeedback :: Get (Integer, String)
 getFeedback = do
@@ -76,12 +77,12 @@ readFeedback ssl callback = withOpenSSL $ do
   
   OpenSSL.Session.shutdown sslsocket Unidirectional
     
-sendAPNS :: SSLContext -> String -> Text -> IO ()
+sendAPNS :: SSLContext -> String -> T.Text -> IO ()
 sendAPNS ssl token json = withOpenSSL $ do
   sslsocket <- socketWithContext ssl "gateway.push.apple.com" 2195
   
   posixTime <- Data.Time.Clock.POSIX.getPOSIXTime
   let expiry = (round posixTime + 60*60) :: Word32
   
-  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode $ BC.pack token) (encodeUtf8 json) expiry)
+  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode $ BC.pack token) (T.Encoding.encodeUtf8 json) expiry)
   
