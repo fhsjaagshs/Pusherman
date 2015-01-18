@@ -2,6 +2,7 @@
 -- 1. Rewrite feedback processing so that it's not
 --    a constant loop and waits between hits.
 -- 2. Notification throttling
+-- 3. Port webhook calling code to Data.HTTP.Client
 
 import qualified Push
 import qualified Zedis
