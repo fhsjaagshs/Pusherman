@@ -43,15 +43,6 @@ data Config = Config {
   errorLog :: Maybe FilePath,
   webhook :: Maybe String
 }
-
-createSSLContext :: String -> String -> IO SSLContext
-createSSLContext cerFile keyFile = withOpenSSL $ do
-  ssl <- OpenSSL.Session.context
-  OpenSSL.Session.contextSetPrivateKeyFile ssl keyFile
-  OpenSSL.Session.contextSetCertificateFile ssl cerFile
-  OpenSSL.Session.contextSetDefaultCiphers ssl
-  OpenSSL.Session.contextSetVerificationMode ssl OpenSSL.Session.VerifyNone
-  return ssl
   
 instance Aeson.FromJSON Config where
   parseJSON (Aeson.Object v) = Config <$>
@@ -158,6 +149,17 @@ getConfigFile = do
   args <- getArgs
   if (Prelude.length args) == 0 then return "config.json"
   else return $ Prelude.head args
+  
+-- SSL 
+
+createSSLContext :: String -> String -> IO SSLContext
+createSSLContext cerFile keyFile = withOpenSSL $ do
+  ssl <- OpenSSL.Session.context
+  OpenSSL.Session.contextSetPrivateKeyFile ssl keyFile
+  OpenSSL.Session.contextSetCertificateFile ssl cerFile
+  OpenSSL.Session.contextSetDefaultCiphers ssl
+  OpenSSL.Session.contextSetVerificationMode ssl OpenSSL.Session.VerifyNone
+  return ssl
   
 -- Main
   
