@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveGeneric #-}
-
 -- TODO: FOR THE FUTURE
 -- 1. Allow for an SSL context to be used multiple times,
 --    decreasing the number of times the keypair must be read
@@ -12,17 +10,16 @@ import qualified Push
 import qualified Zedis
 
 import Data.Maybe
-import GHC.Generics
 import Control.Concurrent
 import Control.Lens
+import Control.Monad
+import Control.Applicative
 
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Lens as Aeson.Lens
 
 import System.IO
 import System.Environment as Environment
-
-import qualified Data.Time.Clock.POSIX as Clock
 
 import Data.Text as Text
 import qualified Data.Text.Encoding as Text.Encoding
@@ -36,17 +33,41 @@ import qualified Data.ByteString.Lazy as BL
 
 import Network.HTTP.Client.Conduit
 
+import OpenSSL
+import OpenSSL.Session
+
 data Config = Config {
   certificate :: !FilePath,
   key :: !FilePath,
-  redisServer :: !String,
-  redisQueue :: !String,
-  notifLogFile :: Maybe FilePath,
-  feedbackLogFile :: Maybe FilePath,
+  redisHost :: !String,
+  redisList :: !String,
+  pushLog :: Maybe FilePath,
+  feedbackLog :: Maybe FilePath,
+  errorLog :: Maybe FilePath,
   webhook :: Maybe String
-} deriving (Show,Generic)
+}
 
-instance Aeson.FromJSON Config
+createSSLContext :: String -> String -> IO SSLContext
+createSSLContext cerFile keyFile = withOpenSSL $ do
+  ssl <- OpenSSL.Session.context
+  OpenSSL.Session.contextSetPrivateKeyFile ssl keyFile
+  OpenSSL.Session.contextSetCertificateFile ssl cerFile
+  OpenSSL.Session.contextSetDefaultCiphers ssl
+  OpenSSL.Session.contextSetVerificationMode ssl OpenSSL.Session.VerifyNone
+  return ssl
+  
+instance Aeson.FromJSON Config where
+  parseJSON (Aeson.Object v) = Config <$>
+                                 v Aeson..:  (Text.pack "certificate") <*>
+                                 v Aeson..:  (Text.pack "key") <*>
+                                 v Aeson..:  (Text.pack "redis_host") <*>
+                                 v Aeson..:  (Text.pack "redis_list") <*>
+                                 v Aeson..:? (Text.pack "push_log") <*>
+                                 v Aeson..:? (Text.pack "feedback_log") <*>
+                                 v Aeson..:? (Text.pack "error_log") <*>
+                                 v Aeson..:? (Text.pack "webhook")
+                                 
+  parseJSON _ = mzero
 
 processPayload :: Aeson.Object -> Maybe Aeson.Object
 processPayload parsed = case HM.lookup (Text.pack "data") parsed of
@@ -65,27 +86,29 @@ generatePayload json = do
 
 -- APNS Notifications
 
-sendPush :: Config -> B.ByteString -> B.ByteString -> IO ()
-sendPush config json token = do
-  case (notifLogFile config) of
-    Nothing -> return ()
+sendPush :: SSLContext -> Maybe FilePath -> B.ByteString -> B.ByteString -> IO ()
+sendPush ssl maybeLogFile json token = do
+  case maybeLogFile of
+    Nothing -> BS.putStrLn (BS.append (BS.append token (BS.pack "\t")) json)
     Just fp -> writeLog fp (BS.append (BS.append token (BS.pack "\t")) json)
     
-  Push.sendAPNS (certificate config) (key config) (BS.unpack token) (Text.Encoding.decodeUtf8 json)
+  Push.sendAPNS ssl (BS.unpack token) (Text.Encoding.decodeUtf8 json)
 
-listener :: Config -> Zedis.RedisConnection -> IO ()
-listener config redisconn = do
-  fromRedis <- Zedis.brpop redisconn (redisQueue config)
+listener :: SSLContext -> Maybe FilePath -> Maybe FilePath -> Zedis.RedisConnection -> String -> IO ()
+listener ssl maybeLogFile maybeErrorLog redisconn redisQueue = do
+  fromRedis <- Zedis.brpop redisconn redisQueue
 
   case fromRedis of
-    Nothing -> putStrLn "Failed to load notification payload from Redis."
+    Nothing -> case maybeErrorLog of
+                Nothing -> putStrLn "error\tFailed to load notification from Redis."
+                Just fp -> writeLog fp (BS.pack "Failed to load notification from Redis.")
     Just res -> case generatePayload res of
-                  Nothing -> putStrLn "Failed to generate APNS payload."
-                  Just payload -> mapM_ (sendPush config (snd payload)) (fst payload) -- ([tokens],payload)
-    
-    
-  
-  listener config redisconn
+                  Nothing -> case maybeErrorLog of
+                                Nothing -> BS.putStrLn $ (BS.append (BS.pack "error\tFailed to generate APNS payload\t") res)
+                                Just fp -> writeLog fp (BS.append (BS.pack "Failed to generate APNS payload\t") res)
+                  Just payload -> mapM_ (sendPush ssl maybeLogFile (snd payload)) (fst payload) -- ([tokens],payload)
+
+  listener ssl maybeLogFile maybeErrorLog redisconn redisQueue
   
 -- Webhook
   
@@ -97,20 +120,20 @@ callWebhook url token timestamp = do
   return ()
   
 -- APNS Feedback
-  
-feedbackListener :: Config -> IO ()
-feedbackListener config = do
-  Push.readFeedback (certificate config) (key config) (processFeedback config)
-  feedbackListener config
-  
-processFeedback :: Config -> (Integer, String) -> IO ()
-processFeedback cnf (timestamp, token) = do
-  
-  case (feedbackLogFile cnf) of
-    Nothing -> return ()
+
+feedbackListener :: SSLContext -> Maybe FilePath -> Maybe String -> IO ()
+feedbackListener ssl maybeFeedbackLog maybeWebhook = do
+  Push.readFeedback ssl (processFeedback maybeFeedbackLog maybeWebhook)
+  feedbackListener ssl maybeFeedbackLog maybeWebhook
+
+-- called by Push.readFeedback
+processFeedback :: Maybe FilePath -> Maybe String -> (Integer, String) -> IO ()
+processFeedback maybeFeedbackLog maybeWebhookUrl (timestamp, token) = do
+  case maybeFeedbackLog of
+    Nothing -> putStrLn $ "feedback\t" ++ (show timestamp) ++ "\t" ++ token
     Just fp -> writeLog fp (BS.pack ((show timestamp) ++ "\t" ++ token))
     
-  case (webhook cnf) of
+  case maybeWebhookUrl of
     Nothing -> return ()
     Just url -> callWebhook url token timestamp
   
@@ -120,6 +143,7 @@ writeLog :: FilePath -> B.ByteString -> IO ()
 writeLog filepath contents = do
   h <- System.IO.openFile filepath AppendMode
   Text.IO.hPutStrLn h (Text.Encoding.decodeUtf8 contents)
+  System.IO.hFlush h
   System.IO.hClose h
   
 -- Config reading
@@ -147,7 +171,11 @@ main = do
   case Aeson.eitherDecodeStrict s of
     Left errormsg -> System.IO.putStrLn $ "Invalid configuration: " ++ errormsg
     Right cnf -> do
-      forkIO $ feedbackListener cnf
-      redisconn <- Zedis.connectRedis (redisServer cnf)
-      System.IO.putStrLn $ "Connected to Redis @ " ++ (redisServer cnf) ++ " on list '" ++ (redisQueue cnf) ++ "'"
-      listener cnf redisconn
+      ssl <- createSSLContext (certificate cnf) (key cnf)
+      redisconn <- Zedis.connectRedis (redisHost cnf)
+      
+      forkIO $ feedbackListener ssl (feedbackLog cnf) (webhook cnf)
+      
+      System.IO.putStrLn $ "connected\t" ++ (redisHost cnf) ++ "\t" ++ (redisList cnf)
+      
+      listener ssl (pushLog cnf) (errorLog cnf) redisconn (redisList cnf)

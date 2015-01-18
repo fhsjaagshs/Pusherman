@@ -1,6 +1,7 @@
 module Push (
   sendAPNS,
-  readFeedback
+  readFeedback,
+  buildSSLContext
 ) where
 
 import Data.Text
@@ -43,30 +44,7 @@ buildPDU token payload expiry
     putByteString token
     putWord16be ((Data.Convertible.convert $ B.length payload) :: Word16)
     putByteString payload
-    
-getHourExpiryTime :: IO (Word32)
-getHourExpiryTime = do
-  pt <- Data.Time.Clock.POSIX.getPOSIXTime
-  return ( (round pt + 60*60) :: Word32)
-  
-socketWithKeypair :: FilePath -> FilePath -> String -> PortNumber -> IO SSL
-socketWithKeypair certificateFile keyFile host port = do
-  -- setup ssl context
-  ssl <- OpenSSL.Session.context
-  OpenSSL.Session.contextSetPrivateKeyFile ssl keyFile
-  OpenSSL.Session.contextSetCertificateFile ssl certificateFile
-  OpenSSL.Session.contextSetDefaultCiphers ssl
-  OpenSSL.Session.contextSetVerificationMode ssl OpenSSL.Session.VerifyNone
 
-  -- Open SSL socket
-  proto <- Network.BSD.getProtocolNumber "tcp"
-  he <- Network.BSD.getHostByName host
-  sock <- socket AF_INET Stream proto
-  Network.Socket.connect sock (SockAddrInet port (hostAddress he))
-  
-  sslsocket <- OpenSSL.Session.connection ssl sock
-  return sslsocket
-  
 writeSSL :: SSL -> B.ByteString -> IO ()
 writeSSL sslsocket str = do
   OpenSSL.Session.connect sslsocket
@@ -78,20 +56,32 @@ parseAndCall readStr callback
   | (BL.length readStr) < 1 = do return ()
   | otherwise = callback (runGet getFeedback readStr)
   
-readFeedback :: FilePath -> FilePath -> ((Integer, String) -> IO ()) -> IO ()
-readFeedback certificateFile keyFile callback = withOpenSSL $ do
-  sslsocket <- socketWithKeypair certificateFile keyFile "feedback.push.apple.com" 2196
+socketWithContext :: SSLContext -> String -> PortNumber -> IO SSL
+socketWithContext ssl host port = do
+  proto <- Network.BSD.getProtocolNumber "tcp"
+  he <- Network.BSD.getHostByName host
+  sock <- socket AF_INET Stream proto
+  Network.Socket.connect sock (SockAddrInet port (hostAddress he))
+  
+  sslsocket <- OpenSSL.Session.connection ssl sock
+  return sslsocket
+  
+readFeedback :: SSLContext -> ((Integer, String) -> IO ()) -> IO ()
+readFeedback ssl callback = withOpenSSL $ do
+  sslsocket <- socketWithContext ssl "feedback.push.apple.com" 2196
   OpenSSL.Session.connect sslsocket
   readStr <- OpenSSL.Session.read sslsocket 38
   
   parseAndCall (BL.fromStrict readStr) callback
   
   OpenSSL.Session.shutdown sslsocket Unidirectional
-  
-sendAPNS :: FilePath -> FilePath -> String -> Text -> IO ()
-sendAPNS certificateFile keyFile token json = withOpenSSL $ do
-  sslsocket <- socketWithKeypair certificateFile keyFile "gateway.push.apple.com" 2195
-  expiration <- getHourExpiryTime
-
-  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode $ BC.pack token) (encodeUtf8 json) expiration)
     
+sendAPNS :: SSLContext -> String -> Text -> IO ()
+sendAPNS ssl token json = withOpenSSL $ do
+  sslsocket <- socketWithContext ssl "gateway.push.apple.com" 2195
+  
+  posixTime <- Data.Time.Clock.POSIX.getPOSIXTime
+  let expiry = (round posixTime + 60*60) :: Word32
+  
+  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode $ BC.pack token) (encodeUtf8 json) expiry)
+  

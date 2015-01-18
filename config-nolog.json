@@ -1,0 +1,1 @@
+{"certificate":"production-push.crt","key":"production-push.key","redis_host":"localhost","redis_list":"notifications"}
