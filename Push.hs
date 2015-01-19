@@ -77,12 +77,12 @@ readFeedback ssl callback = withOpenSSL $ do
   
   OpenSSL.Session.shutdown sslsocket Unidirectional
     
-sendAPNS :: SSLContext -> String -> T.Text -> IO ()
+sendAPNS :: SSLContext -> B.ByteString -> T.Text -> IO ()
 sendAPNS ssl token json = withOpenSSL $ do
   sslsocket <- socketWithContext ssl "gateway.push.apple.com" 2195
   
   posixTime <- Data.Time.Clock.POSIX.getPOSIXTime
   let expiry = (round posixTime + 60*60) :: Word32
 
-  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode $ BC.pack token) (T.Encoding.encodeUtf8 json) expiry)
+  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode token) (T.Encoding.encodeUtf8 json) expiry)
   

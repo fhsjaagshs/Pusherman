@@ -85,13 +85,13 @@ sendPush ssl maybeLogFile maybeErrorLog json token = do
       Nothing -> BS.putStrLn (BS.append (BS.pack "paylod too long\t") json)
       Just fp -> writeLog fp (BS.append (BS.pack "paylod too long\t") json)
   else
-    if BS.length token != 64
+    if BS.length token /= 64
     then
       case maybeErrorLog of
         Nothing -> BS.putStrLn (BS.append (BS.pack "invalid token\t") token)
         Just fp -> writeLog fp (BS.append (BS.pack "invalid token\t") token)
     else
-      Push.sendAPNS ssl (BS.unpack token) (T.Encoding.decodeUtf8 json)
+      Push.sendAPNS ssl token (T.Encoding.decodeUtf8 json)
 
 listener :: SSLContext -> Maybe FilePath -> Maybe FilePath -> Zedis.RedisConnection -> String -> IO ()
 listener ssl maybeLogFile maybeErrorLog redisconn redisQueue = do
