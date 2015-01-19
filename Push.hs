@@ -36,7 +36,7 @@ getFeedback = do
 buildPDU :: B.ByteString -> BU.ByteString -> Word32 -> Put -- second one is BU.ByteString
 buildPDU token payload expiry
   | (B.length token) /= 32 = fail "Invalid token"
-  | (B.length payload > 255) = fail "Too long payload"
+  | (B.length payload > 1900) = fail "Payload bigger than APNS size limit." -- 2000 is the max payload (minus some thick padding)
   | otherwise = do
     putWord8 1
     putWord32be 1
@@ -83,6 +83,6 @@ sendAPNS ssl token json = withOpenSSL $ do
   
   posixTime <- Data.Time.Clock.POSIX.getPOSIXTime
   let expiry = (round posixTime + 60*60) :: Word32
-  
+
   writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode $ BC.pack token) (T.Encoding.encodeUtf8 json) expiry)
   

@@ -73,13 +73,19 @@ generatePayload json = do
 
 -- APNS Notifications
 
-sendPush :: SSLContext -> Maybe FilePath -> B.ByteString -> B.ByteString -> IO ()
-sendPush ssl maybeLogFile json token = do
+sendPush :: SSLContext -> Maybe FilePath -> Maybe FilePath -> B.ByteString -> B.ByteString -> IO ()
+sendPush ssl maybeLogFile maybeErrorLog json token = do
   case maybeLogFile of
     Nothing -> BS.putStrLn (BS.append (BS.append token (BS.pack "\t")) json)
     Just fp -> writeLog fp (BS.append (BS.append token (BS.pack "\t")) json)
     
-  Push.sendAPNS ssl (BS.unpack token) (T.Encoding.decodeUtf8 json)
+  if BS.length json > 1900
+  then 
+    case maybeErrorLog of
+      Nothing -> BS.putStrLn (BS.append (BS.pack "Paylod too long\t") json)
+      Just fp -> writeLog fp (BS.append (BS.pack "Paylod too long\t") json)
+  else
+    (Push.sendAPNS ssl (BS.unpack token) (T.Encoding.decodeUtf8 json))
 
 listener :: SSLContext -> Maybe FilePath -> Maybe FilePath -> Zedis.RedisConnection -> String -> IO ()
 listener ssl maybeLogFile maybeErrorLog redisconn redisQueue = do
@@ -93,7 +99,7 @@ listener ssl maybeLogFile maybeErrorLog redisconn redisQueue = do
                   Nothing -> case maybeErrorLog of
                                 Nothing -> BS.putStrLn $ (BS.append (BS.pack "error\tFailed to generate APNS payload\t") res)
                                 Just fp -> writeLog fp (BS.append (BS.pack "Failed to generate APNS payload\t") res)
-                  Just payload -> mapM_ (sendPush ssl maybeLogFile (snd payload)) (fst payload) -- ([tokens],payload)
+                  Just payload -> mapM_ (sendPush ssl maybeLogFile maybeErrorLog (snd payload)) (fst payload) -- ([tokens],payload)
 
   listener ssl maybeLogFile maybeErrorLog redisconn redisQueue
   
