@@ -8,6 +8,8 @@ import Data.Binary.Put
 import Data.Binary.Get
 import Data.Convertible
 
+import Data.Maybe
+
 import Data.Time.Clock.POSIX
 
 import OpenSSL
@@ -46,43 +48,51 @@ buildPDU token payload expiry
     putWord16be ((Data.Convertible.convert $ B.length payload) :: Word16)
     putByteString payload
 
-writeSSL :: SSL -> B.ByteString -> IO ()
-writeSSL sslsocket str = do
-  OpenSSL.Session.connect sslsocket
-  OpenSSL.Session.write sslsocket str
-  OpenSSL.Session.shutdown sslsocket Unidirectional
-
 parseAndCall :: BL.ByteString -> ((Integer, String) -> IO ()) -> IO ()
 parseAndCall readStr callback
   | (BL.length readStr) < 1 = do return ()
   | otherwise = callback (runGet getFeedback readStr)
   
-socketWithContext :: SSLContext -> String -> PortNumber -> IO SSL
-socketWithContext ssl host port = do
+writeSSL :: SSLContext -> String -> PortNumber -> B.ByteString -> IO ()
+writeSSL ssl host port str = withOpenSSL $ do
   proto <- Network.BSD.getProtocolNumber "tcp"
   he <- Network.BSD.getHostByName host
   sock <- socket AF_INET Stream proto
+  
   Network.Socket.connect sock (SockAddrInet port (hostAddress he))
   
   sslsocket <- OpenSSL.Session.connection ssl sock
-  return sslsocket
+  
+  OpenSSL.Session.connect sslsocket
+  OpenSSL.Session.write sslsocket str
+  OpenSSL.Session.shutdown sslsocket Unidirectional
+  Network.Socket.shutdown (fromJust $ OpenSSL.Session.sslSocket sslsocket) ShutdownBoth
+  
+readSSL :: SSLContext -> String -> PortNumber -> Int -> IO (B.ByteString)
+readSSL ssl host port readLen = withOpenSSL $ do
+  proto <- Network.BSD.getProtocolNumber "tcp"
+  he <- Network.BSD.getHostByName host
+  sock <- socket AF_INET Stream proto
+  
+  Network.Socket.connect sock (SockAddrInet port (hostAddress he))
+  
+  sslsocket <- OpenSSL.Session.connection ssl sock
+  
+  OpenSSL.Session.connect sslsocket
+  readStr <- OpenSSL.Session.read sslsocket readLen
+  OpenSSL.Session.shutdown sslsocket Unidirectional
+  Network.Socket.shutdown (fromJust $ OpenSSL.Session.sslSocket sslsocket) ShutdownBoth
+  return readStr
   
 readFeedback :: SSLContext -> ((Integer, String) -> IO ()) -> IO ()
 readFeedback ssl callback = withOpenSSL $ do
-  sslsocket <- socketWithContext ssl "feedback.push.apple.com" 2196
-  OpenSSL.Session.connect sslsocket
-  readStr <- OpenSSL.Session.read sslsocket 38
-  
+  readStr <- readSSL ssl "feedback.push.apple.com" 2196 38
   parseAndCall (BL.fromStrict readStr) callback
-  
-  OpenSSL.Session.shutdown sslsocket Unidirectional
     
 sendAPNS :: SSLContext -> B.ByteString -> T.Text -> IO ()
 sendAPNS ssl token json = withOpenSSL $ do
-  sslsocket <- socketWithContext ssl "gateway.push.apple.com" 2195
-  
   posixTime <- Data.Time.Clock.POSIX.getPOSIXTime
   let expiry = (round posixTime + 60*60) :: Word32
-
-  writeSSL sslsocket (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode token) (T.Encoding.encodeUtf8 json) expiry)
+  let pdu = (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode token) (T.Encoding.encodeUtf8 json) expiry)
   
+  writeSSL ssl "gateway.push.apple.com" 2195 pdu

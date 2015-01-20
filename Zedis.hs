@@ -36,6 +36,7 @@ connectRedis host = do
 disconnectRedis :: RedisConnection -> IO ()
 disconnectRedis conn = do
   shutdown (tcpSocket conn) ShutdownBoth
+  Network.Socket.shutdown (fromJust $ OpenSSL.Session.sslSocket $ tcpSocket conn) ShutdownBoth
 
 readSection :: Socket -> IO B.ByteString
 readSection sock = do

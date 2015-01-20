@@ -101,11 +101,11 @@ listener ssl maybeLogFile maybeErrorLog redisconn redisQueue = do
     Nothing -> case maybeErrorLog of
                 Nothing -> putStrLn "error\tFailed to load notification from Redis."
                 Just fp -> writeLog fp (BS.pack "Failed to load notification from Redis.")
-    Just res -> case generatePayload res of
+    Just res -> case generatePayload res of -- ([tokens],payload)
                   Nothing -> case maybeErrorLog of
                                 Nothing -> BS.putStrLn $ (BS.append (BS.pack "error\tFailed to generate APNS payload\t") res)
                                 Just fp -> writeLog fp (BS.append (BS.pack "Failed to generate APNS payload\t") res)
-                  Just payload -> mapM_ (sendPush ssl maybeLogFile maybeErrorLog (snd payload)) (fst payload) -- ([tokens],payload)
+                  Just payload -> mapM_ (sendPush ssl maybeLogFile maybeErrorLog (snd payload)) (fst payload)
 
   listener ssl maybeLogFile maybeErrorLog redisconn redisQueue
   
@@ -140,10 +140,10 @@ processFeedback maybeFeedbackLog maybeWebhookUrl (timestamp, token) = do
   
 writeLog :: FilePath -> B.ByteString -> IO ()
 writeLog filepath contents = do
-  h <- System.IO.openFile filepath AppendMode
+  h <- openFile filepath AppendMode
   T.IO.hPutStrLn h (T.Encoding.decodeUtf8 contents)
-  System.IO.hFlush h
-  System.IO.hClose h
+  hFlush h
+  hClose h
   
 -- Config reading
 
