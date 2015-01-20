@@ -5,6 +5,8 @@ module Zedis (
   RedisConnection(..)
 ) where
 
+import Data.Maybe
+
 import Network.BSD
 import Network.Socket
 import Network.Socket.ByteString
@@ -36,7 +38,7 @@ connectRedis host = do
 disconnectRedis :: RedisConnection -> IO ()
 disconnectRedis conn = do
   shutdown (tcpSocket conn) ShutdownBoth
-  Network.Socket.shutdown (fromJust $ OpenSSL.Session.sslSocket $ tcpSocket conn) ShutdownBoth
+  Network.Socket.shutdown (tcpSocket conn) ShutdownBoth
 
 readSection :: Socket -> IO B.ByteString
 readSection sock = do
@@ -53,7 +55,17 @@ readSection' sock str
   | otherwise = do
     p <- Network.Socket.ByteString.recv sock 1
     readSection' sock (B.append str p)
+    
+bcToInt :: BC.ByteString -> Int
+bcToInt bc = fst $ fromJust $ BC.readInt bc
 
+readBulkStr :: Socket -> IO B.ByteString
+readBulkStr sock = do
+  lenBulkStr <- readSection sock
+  let strlen = (bcToInt $ B.tail lenBulkStr)
+  str <- Network.Socket.ByteString.recv sock (strlen+2)
+  return $ B.take strlen str
+  
 brpop :: RedisConnection -> String -> IO (Maybe B.ByteString)
 brpop conn list = do
   -- this line is a complete hack
@@ -64,10 +76,10 @@ brpop conn list = do
   case BC.head firstChunk of
     '-' -> return Nothing
     '*' -> do
-      -- so is this shit
-      key <- readSection (tcpSocket conn)
-      _ <- readSection (tcpSocket conn)
-      _ <- readSection (tcpSocket conn)
-      payload <- readSection (tcpSocket conn)
-      return $ Just payload
+      if (bcToInt (B.tail firstChunk)) == 2
+      then do
+        listName <- readBulkStr (tcpSocket conn)
+        payload <- readBulkStr (tcpSocket conn)
+        return $ Just payload
+      else return Nothing
     otherwise -> return $ Just firstChunk
