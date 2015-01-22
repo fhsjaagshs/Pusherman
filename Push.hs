@@ -65,8 +65,11 @@ writeSSL ssl host port str = withOpenSSL $ do
   
   OpenSSL.Session.connect sslsocket
   OpenSSL.Session.write sslsocket str
-  OpenSSL.Session.shutdown sslsocket Unidirectional
-  Network.Socket.shutdown (fromJust $ OpenSSL.Session.sslSocket sslsocket) ShutdownBoth
+  OpenSSL.Session.shutdown sslsocket Biidirectional
+  case OpenSSL.Session.sslSocket sslsocket of
+    Nothing -> Nothing
+    Just tcpSock -> Network.Socket.shutdown tcpSock ShutdownBoth
+  return ()
   
 readSSL :: SSLContext -> String -> PortNumber -> Int -> IO (B.ByteString)
 readSSL ssl host port readLen = withOpenSSL $ do
@@ -80,8 +83,10 @@ readSSL ssl host port readLen = withOpenSSL $ do
   
   OpenSSL.Session.connect sslsocket
   readStr <- OpenSSL.Session.read sslsocket readLen
-  OpenSSL.Session.shutdown sslsocket Unidirectional
-  Network.Socket.shutdown (fromJust $ OpenSSL.Session.sslSocket sslsocket) ShutdownBoth
+  OpenSSL.Session.shutdown sslsocket Bidirectional
+  case OpenSSL.Session.sslSocket sslsocket of
+    Nothing -> Nothing
+    Just tcpSock -> Network.Socket.shutdown tcpSock ShutdownBoth
   return readStr
   
 readFeedback :: SSLContext -> ((Integer, String) -> IO ()) -> IO ()
