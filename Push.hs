@@ -66,11 +66,11 @@ writeSSL ssl host port str = withOpenSSL $ do
   OpenSSL.Session.connect sslsocket
   OpenSSL.Session.write sslsocket str
   OpenSSL.Session.shutdown sslsocket Bidirectional
-  case OpenSSL.Session.sslSocket sslsocket of
-    Nothing -> Nothing
-    Just tcpSock -> Network.Socket.shutdown tcpSock ShutdownBoth
-  return ()
   
+  connected <- sIsConnected sock
+  
+  Network.Socket.sClose sock
+
 readSSL :: SSLContext -> String -> PortNumber -> Int -> IO (B.ByteString)
 readSSL ssl host port readLen = withOpenSSL $ do
   proto <- Network.BSD.getProtocolNumber "tcp"
@@ -84,9 +84,7 @@ readSSL ssl host port readLen = withOpenSSL $ do
   OpenSSL.Session.connect sslsocket
   readStr <- OpenSSL.Session.read sslsocket readLen
   OpenSSL.Session.shutdown sslsocket Bidirectional
-  case OpenSSL.Session.sslSocket sslsocket of
-    Nothing -> Nothing
-    Just tcpSock -> Network.Socket.shutdown tcpSock ShutdownBoth
+  Network.Socket.sClose sock
   return readStr
   
 readFeedback :: SSLContext -> ((Integer, String) -> IO ()) -> IO ()
