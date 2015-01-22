@@ -65,7 +65,7 @@ writeSSL ssl host port str = withOpenSSL $ do
   
   OpenSSL.Session.connect sslsocket
   OpenSSL.Session.write sslsocket str
-  OpenSSL.Session.shutdown sslsocket Biidirectional
+  OpenSSL.Session.shutdown sslsocket Bidirectional
   case OpenSSL.Session.sslSocket sslsocket of
     Nothing -> Nothing
     Just tcpSock -> Network.Socket.shutdown tcpSock ShutdownBoth
