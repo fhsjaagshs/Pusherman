@@ -138,12 +138,10 @@ processFeedback maybeFeedbackLog maybeWebhookUrl (timestamp, token) = do
   
 -- Logging
   
-writeLog :: FilePath -> B.ByteString -> IO ()
-writeLog filepath contents = do
-  h <- openFile filepath AppendMode
+writeLog :: FilePath -> BS.ByteString -> IO ()
+writeLog filepath contents = withFile filepath AppendMode $ \h -> do
   T.IO.hPutStrLn h (T.Encoding.decodeUtf8 contents)
   hFlush h
-  hClose h
   
 -- Config reading
 
