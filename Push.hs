@@ -25,7 +25,6 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.UTF8 as BU
-import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
 
 getFeedback :: Get (Integer, String)
@@ -47,11 +46,6 @@ buildPDU token payload expiry
     putByteString token
     putWord16be ((Data.Convertible.convert $ B.length payload) :: Word16)
     putByteString payload
-
-parseAndCall :: BL.ByteString -> ((Integer, String) -> IO ()) -> IO ()
-parseAndCall readStr callback
-  | (BL.length readStr) < 1 = do return ()
-  | otherwise = callback (runGet getFeedback readStr)
   
 writeSSL :: SSLContext -> String -> PortNumber -> B.ByteString -> IO ()
 writeSSL ssl host port str = withOpenSSL $ do
@@ -90,7 +84,8 @@ readSSL ssl host port readLen = withOpenSSL $ do
 readFeedback :: SSLContext -> ((Integer, String) -> IO ()) -> IO ()
 readFeedback ssl callback = withOpenSSL $ do
   readStr <- readSSL ssl "feedback.push.apple.com" 2196 38
-  parseAndCall (BL.fromStrict readStr) callback
+  if (BS.length readStr == 0) then return ()
+  else callback (runGet getFeedback (BL.fromStrict readStr))
     
 sendAPNS :: SSLContext -> B.ByteString -> T.Text -> IO ()
 sendAPNS ssl token json = withOpenSSL $ do

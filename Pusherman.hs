@@ -27,7 +27,6 @@ import qualified Data.Aeson.Lens as Aeson.Lens
 import qualified Data.Text as T
 import qualified Data.Text.IO as T.IO
 import qualified Data.Text.Encoding as T.Encoding
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as BS
 
@@ -73,7 +72,7 @@ generatePayload json = do
 
 -- APNS Notifications
 
-sendPush :: SSLContext -> Maybe FilePath -> Maybe FilePath -> B.ByteString -> B.ByteString -> IO ()
+sendPush :: SSLContext -> Maybe FilePath -> Maybe FilePath -> BS.ByteString -> BS.ByteString -> IO ()
 sendPush ssl maybeLogFile maybeErrorLog json token = do
   case maybeLogFile of
     Nothing -> BS.putStrLn (BS.append (BS.append token (BS.pack "\t")) json)
@@ -117,7 +116,7 @@ callWebhook url token timestamp = do
   let req = (flip urlEncodedBody) initReq { method = BS.pack "POST" } $ [(BS.pack "token", BS.pack token), (BS.pack "timestamp", BS.pack (show timestamp))]
   withManager $ httpNoBody req
   return ()
-  
+
 -- APNS Feedback
 
 feedbackListener :: SSLContext -> Maybe FilePath -> Maybe String -> IO ()
