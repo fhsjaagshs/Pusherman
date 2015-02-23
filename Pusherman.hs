@@ -74,36 +74,21 @@ generatePayload json = do
 
 sendPush :: SSLContext -> Maybe FilePath -> Maybe FilePath -> BS.ByteString -> BS.ByteString -> IO ()
 sendPush ssl maybeLogFile maybeErrorLog json token = do
-  case maybeLogFile of
-    Nothing -> BS.putStrLn (BS.append (BS.append token (BS.pack "\t")) json)
-    Just fp -> writeLog fp (BS.append (BS.append token (BS.pack "\t")) json)
+  writeLog maybeLogFile (BS.append (BS.append token (BS.pack "\t")) json)
     
-  if BS.length json > 1900
-  then 
-    case maybeErrorLog of
-      Nothing -> BS.putStrLn (BS.append (BS.pack "paylod too long\t") json)
-      Just fp -> writeLog fp (BS.append (BS.pack "paylod too long\t") json)
+  if BS.length json > 1900 then writeLog maybeErrorLog (BS.append (BS.pack "error\tpaylod too long\t") json)
   else
-    if BS.length token /= 64
-    then
-      case maybeErrorLog of
-        Nothing -> BS.putStrLn (BS.append (BS.pack "invalid token\t") token)
-        Just fp -> writeLog fp (BS.append (BS.pack "invalid token\t") token)
-    else
-      Push.sendAPNS ssl token (T.Encoding.decodeUtf8 json)
+    if BS.length token /= 64 then writeLog maybeErrorLog (BS.append (BS.pack "error\tinvalid token\t") token)
+    else Push.sendAPNS ssl token (T.Encoding.decodeUtf8 json)
 
 listener :: SSLContext -> Maybe FilePath -> Maybe FilePath -> Zedis.RedisConnection -> String -> IO ()
 listener ssl maybeLogFile maybeErrorLog redisconn redisQueue = do
   fromRedis <- Zedis.brpop redisconn redisQueue
 
   case fromRedis of
-    Nothing -> case maybeErrorLog of
-                Nothing -> putStrLn "error\tFailed to load notification from Redis."
-                Just fp -> writeLog fp (BS.pack "Failed to load notification from Redis.")
+    Nothing -> writeLog maybeErrorLog (BS.pack "error\tFailed to load notification from Redis.")
     Just res -> case generatePayload res of -- ([tokens],payload)
-                  Nothing -> case maybeErrorLog of
-                                Nothing -> BS.putStrLn $ (BS.append (BS.pack "error\tFailed to generate APNS payload\t") res)
-                                Just fp -> writeLog fp (BS.append (BS.pack "Failed to generate APNS payload\t") res)
+                  Nothing -> writeLog maybeErrorLog (BS.append (BS.pack "error\tFailed to generate APNS payload\t") res)
                   Just payload -> mapM_ (sendPush ssl maybeLogFile maybeErrorLog (snd payload)) (fst payload)
 
   listener ssl maybeLogFile maybeErrorLog redisconn redisQueue
@@ -120,27 +105,26 @@ callWebhook url token timestamp = do
 -- APNS Feedback
 
 feedbackListener :: SSLContext -> Maybe FilePath -> Maybe String -> IO ()
-feedbackListener ssl maybeFeedbackLog maybeWebhook = do
-  Push.readFeedback ssl (processFeedback maybeFeedbackLog maybeWebhook)
+feedbackListener ssl maybeFeedbackLog maybeWebhookUrl = do
+  Push.readFeedback ssl (processFeedback maybeFeedbackLog maybeWebhookUrl)
   feedbackListener ssl maybeFeedbackLog maybeWebhook
 
 -- called by Push.readFeedback
 processFeedback :: Maybe FilePath -> Maybe String -> (Integer, String) -> IO ()
 processFeedback maybeFeedbackLog maybeWebhookUrl (timestamp, token) = do
-  case maybeFeedbackLog of
-    Nothing -> putStrLn $ "feedback\t" ++ (show timestamp) ++ "\t" ++ token
-    Just fp -> writeLog fp (BS.pack ((show timestamp) ++ "\t" ++ token))
-    
+  writeLog maybeFeedbackLog (BS.pack ("feedback\t" ++ (show timestamp) ++ "\t" ++ token))
   case maybeWebhookUrl of
     Nothing -> return ()
     Just url -> callWebhook url token timestamp
   
 -- Logging
   
-writeLog :: FilePath -> BS.ByteString -> IO ()
-writeLog filepath contents = withFile filepath AppendMode $ \h -> do
-  T.IO.hPutStrLn h (T.Encoding.decodeUtf8 contents)
-  hFlush h
+writeLog :: Maybe FilePath -> BS.ByteString -> IO ()
+writeLog maybeFilepath contents = case maybeFilepath of
+                                   Nothing -> BS.putStrLn contents
+                                   Just fp -> withFile fp AppendMode $ \h -> do
+                                                T.IO.hPutStrLn h (T.Encoding.decodeUtf8 contents)
+                                                hFlush h
   
 -- Config reading
 
@@ -181,7 +165,7 @@ main = do
       ssl <- createSSLContext (certificate cnf) (key cnf)
       redisconn <- Zedis.connectRedis (redisHost cnf)
 
-      -- forkIO $ feedbackListener ssl (feedbackLog cnf) (webhook cnf)
+      forkIO $ feedbackListener ssl (feedbackLog cnf) (webhook cnf)
       
       System.IO.putStrLn $ "connected\t" ++ (redisHost cnf) ++ "\t" ++ (redisList cnf)
       
