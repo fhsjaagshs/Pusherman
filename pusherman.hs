@@ -15,14 +15,17 @@ import Control.Applicative
 
 import Network.HTTP.Client.Conduit
 
-import OpenSSL
-import OpenSSL.Session
+--import OpenSSL
+--import OpenSSL.Session
+
+import Network.TLS
+import Crypto.Random.AESCtr (makeSystem)
 
 import System.IO
 import System.Environment
 
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Lens as Aeson.Lens
+import qualified Data.Aeson as A
+import qualified Data.Aeson.Lens as A.Lens
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T.IO
@@ -31,6 +34,39 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as BS
 
 import qualified Data.HashMap.Strict as HM
+
+newtype PushermanT m a = PushermanT { runPushermantT :: ReaderT (Config,RedisConnection,Context) m a }
+
+redis :: Monad m => PushermanT m RedisConnection
+redis = do
+  (_,c,_) <- ask
+  return c
+
+config :: Monad m => PushermanT m Config
+config = do
+  (c,_,_) <- ask
+  return c
+
+context :: Monad m => PushermanT m Context
+context = do
+  (_,_,c) <- ask
+  return c
+
+writeError :: MonadIO m => String -> PushermanT m ()
+writeError err = config >>= maybe writeStderr writeToFile . errorLog
+  where
+    writeStderr = hPutStrLn stderr err
+    writeToFile fp = withFile fp AppendMode $ \h -> do
+      hPutStrLn h err
+      hFlush h
+
+writeLog :: MonadIO m => String -> PushermanT m ()
+writeLog out = config >>= maybe writeStdout writeToFile . pushLog
+  where
+    writeStdout = hPutStrLn stdout out
+    writeToFile fp = withFile fp AppendMode $ \h -> do
+      hPutStrLn h err
+      hFlush h
 
 data Config = Config {
   certificate :: !FilePath,
@@ -42,72 +78,44 @@ data Config = Config {
   errorLog :: Maybe FilePath,
   webhook :: Maybe String
 }
-  
-instance Aeson.FromJSON Config where
-  parseJSON (Aeson.Object v) = Config <$>
-                                 v Aeson..:  (T.pack "certificate") <*>
-                                 v Aeson..:  (T.pack "key") <*>
-                                 v Aeson..:  (T.pack "redis_host") <*>
-                                 v Aeson..:  (T.pack "redis_list") <*>
-                                 v Aeson..:? (T.pack "push_log") <*>
-                                 v Aeson..:? (T.pack "feedback_log") <*>
-                                 v Aeson..:? (T.pack "error_log") <*>
-                                 v Aeson..:? (T.pack "webhook")
+
+instance A.FromJSON Config where
+  parseJSON (A.Object v) = Config <$>
+                                 v A..:  (T.pack "certificate") <*>
+                                 v A..:  (T.pack "key") <*>
+                                 v A..:  (T.pack "redis_host") <*>
+                                 v A..:  (T.pack "redis_list") <*>
+                                 v A..:? (T.pack "push_log") <*>
+                                 v A..:? (T.pack "feedback_log") <*>
+                                 v A..:? (T.pack "error_log") <*>
+                                 v A..:? (T.pack "webhook")
   parseJSON _ = mzero
 
-processPayload :: Aeson.Object -> Maybe Aeson.Object
+processPayload :: A.Object -> Maybe A.Object
 processPayload parsed = case HM.lookup (T.pack "data") parsed of
                           Nothing -> Nothing
-                          Just (Aeson.Object dataObj) -> Just $ HM.insert (T.pack "aps") (Aeson.Object (HM.delete (T.pack "data") (HM.delete (T.pack "tokens") parsed))) dataObj
+                          Just (A.Object dataObj) -> Just $ HM.insert (T.pack "aps") (A.Object (HM.delete (T.pack "data") (HM.delete (T.pack "tokens") parsed))) dataObj
 
-getTokens :: Maybe Aeson.Value -> [T.Text]
-getTokens decoded = decoded & catMaybes . toListOf (Aeson.Lens.key (T.pack "tokens") . Aeson.Lens.traverseArray) :: [T.Text]
+getTokens :: Maybe A.Value -> [T.Text]
+getTokens decoded = decoded & catMaybes . toListOf (A.Lens.key (T.pack "tokens") . A.Lens.traverseArray) :: [T.Text]
 
 generatePayload :: BS.ByteString -> Maybe ([BS.ByteString], BS.ByteString)
 generatePayload json = do
-  let parsed = Aeson.decodeStrict json
+  let parsed = A.decodeStrict json
   case parsed of
     Nothing -> Nothing
-    Just (Aeson.Object parsedObject) -> Just $ (Prelude.map T.Encoding.encodeUtf8 (getTokens parsed), BL.toStrict $ Aeson.encode $ fromJust $ processPayload $ parsedObject)
+    Just (A.Object parsedObject) -> Just $ (Prelude.map T.Encoding.encodeUtf8 (getTokens parsed), BL.toStrict $ A.encode $ fromJust $ processPayload $ parsedObject)
 
 -- APNS Notifications
-
-sendPush :: SSLContext -> Maybe FilePath -> Maybe FilePath -> BS.ByteString -> BS.ByteString -> IO ()
-sendPush ssl maybeLogFile maybeErrorLog json token = do
-  writeLog maybeLogFile (BS.append (BS.append token (BS.pack "\t")) json)
-    
-  if BS.length json > 1900 then writeLog maybeErrorLog (BS.append (BS.pack "error\tpaylod too long\t") json)
-  else
-    if BS.length token /= 64 then writeLog maybeErrorLog (BS.append (BS.pack "error\tinvalid token\t") token)
-    else Push.sendAPNS ssl token (T.Encoding.decodeUtf8 json)
-
-listener :: SSLContext -> Maybe FilePath -> Maybe FilePath -> Zedis.RedisConnection -> String -> IO ()
-listener ssl maybeLogFile maybeErrorLog redisconn redisQueue = do
-  fromRedis <- Zedis.brpop redisconn redisQueue
-
-  case fromRedis of
-    Nothing -> writeLog maybeErrorLog (BS.pack "error\tFailed to load notification from Redis.")
-    Just res -> case generatePayload res of -- ([tokens],payload)
-                  Nothing -> writeLog maybeErrorLog (BS.append (BS.pack "error\tFailed to generate APNS payload\t") res)
-                  Just payload -> mapM_ (sendPush ssl maybeLogFile maybeErrorLog (snd payload)) (fst payload)
-
-  listener ssl maybeLogFile maybeErrorLog redisconn redisQueue
   
 -- Webhook
-  
+
 callWebhook :: String -> String -> Integer -> IO ()
 callWebhook url token timestamp = do
   initReq <- parseUrl url
   let req = (flip urlEncodedBody) initReq { method = BS.pack "POST" } $ [(BS.pack "token", BS.pack token), (BS.pack "timestamp", BS.pack (show timestamp))]
   withManager $ httpNoBody req
   return ()
-
--- APNS Feedback
-
-feedbackListener :: SSLContext -> Maybe FilePath -> Maybe String -> IO ()
-feedbackListener ssl maybeFeedbackLog maybeWebhookUrl = do
-  Push.readFeedback ssl (processFeedback maybeFeedbackLog maybeWebhookUrl)
-  feedbackListener ssl maybeFeedbackLog maybeWebhook
 
 -- called by Push.readFeedback
 processFeedback :: Maybe FilePath -> Maybe String -> (Integer, String) -> IO ()
@@ -119,54 +127,100 @@ processFeedback maybeFeedbackLog maybeWebhookUrl (timestamp, token) = do
   
 -- Logging
   
-writeLog :: Maybe FilePath -> BS.ByteString -> IO ()
-writeLog maybeFilepath contents = case maybeFilepath of
-                                   Nothing -> BS.putStrLn contents
-                                   Just fp -> withFile fp AppendMode $ \h -> do
-                                                T.IO.hPutStrLn h (T.Encoding.decodeUtf8 contents)
-                                                hFlush h
-  
--- Config reading
-
-readConfigFile :: IO BS.ByteString
-readConfigFile = do
-  fileP <- getConfigFile
-  h <- openFile fileP ReadMode
-  hSeek h AbsoluteSeek 0
-  c <- BS.hGetContents h
-  hClose h
-  return c
-  
-getConfigFile :: IO FilePath
-getConfigFile = do
-  args <- getArgs
-  if (Prelude.length args) == 0 then return "config.json"
-  else return $ Prelude.head args
-  
 -- SSL 
 
-createSSLContext :: String -> String -> IO SSLContext
-createSSLContext cerFile keyFile = withOpenSSL $ do
-  ssl <- OpenSSL.Session.context
-  OpenSSL.Session.contextSetPrivateKeyFile ssl keyFile
-  OpenSSL.Session.contextSetCertificateFile ssl cerFile
-  OpenSSL.Session.contextSetDefaultCiphers ssl
-  OpenSSL.Session.contextSetVerificationMode ssl OpenSSL.Session.VerifyNone
-  return ssl
+--createSSLContext :: String -> String -> IO SSLContext
+--createSSLContext cerFile keyFile = withOpenSSL $ do
+--  ssl <- OpenSSL.Session.context
+--  OpenSSL.Session.contextSetPrivateKeyFile ssl keyFile
+--  OpenSSL.Session.contextSetCertificateFile ssl cerFile
+--  OpenSSL.Session.contextSetDefaultCiphers ssl
+--  OpenSSL.Session.contextSetVerificationMode ssl OpenSSL.Session.VerifyNone
+--  return ssl
   
--- Main
-  
-main :: IO ()
-main = do
-  s <- readConfigFile
-  case Aeson.eitherDecodeStrict s of
-    Left errormsg -> System.IO.putStrLn $ "Invalid configuration: " ++ errormsg
-    Right cnf -> do
-      ssl <- createSSLContext (certificate cnf) (key cnf)
-      redisconn <- Zedis.connectRedis (redisHost cnf)
 
-      forkIO $ feedbackListener ssl (feedbackLog cnf) (webhook cnf)
+-- Main Action
+
+feedback :: MonadIO m => PushermanT m ()
+feedback = do
+  c <- config
+  Push.readFeedback ssl (processFeedback (feedbackLog c) (webhook c))
+
+pusher :: MonadIO m => PushermanT m ()
+pusher = do
+  c <- config
+  redisconn <- redis
+  fromRedis <- Zedis.brpop redisconn (redisList c)
+
+  case fromRedis of
+    Nothing -> writeError "error\tFailed to load notification from Redis."
+    Just res -> case generatePayload res of
+                  Nothing -> writeError $ "error\tFailed to generate APNS payload\t" ++ (BS.unpack res)
+                  Just (tokens,payload) -> do
+                    if BS.length json > 1900
+                       then writeError $ "error\tpayload too long\t" ++ (BS.unpack json)
+                       else mapM_ (sendPush payload) tokens
+  where
+    sendPush json token = do
+      writeLog $ token <> (BS.pack "\t") <> json
       
-      System.IO.putStrLn $ "connected\t" ++ (redisHost cnf) ++ "\t" ++ (redisList cnf)
-      
-      listener ssl (pushLog cnf) (errorLog cnf) redisconn (redisList cnf)
+      if BS.length token /= 64
+        then writeError $ "error\tinvalid token\t" ++ (BS.unpack token)
+        else do
+          let ssl = undefined -- TODO: implement this
+          Push.sendAPNS ssl token (T.Encoding.decodeUtf8 json)
+
+-- Config reading
+
+readConfig :: IO (Either String Config)
+readConfig = do
+  json <- BS.readFile fromMaybe "config.json" . listToMaybe =<< getArgs
+  return $ A.eitherDecode json
+-- Main
+
+main :: IO ()
+main = readConfig >>= either (putStrLn . mappend "Invalid configuration: ") run
+  where
+    run cnf = do
+      ecreds <- credentialLoadX509 (certificate cnf) (key cnf)
+      case ecreds of
+        Left err -> putStrLn $ "Invalid certificate: " ++ err
+        Right creds -> do
+          redisconn <- Zedis.connectRedis (redisHost cnf)
+          -- TODO: handshake this using creds
+          let context = Nothing
+          let state = (cnf,redisconn,context)
+          forkIO $ forever $ runReaderT (runPushermantT feedback) state
+          putStrLn $ "connected\t" ++ (redisHost cnf) ++ "\t" ++ (redisList cnf)
+          forever $ runReaderT (runPushermantT pusher) state
+
+
+sslHttpConnect :: ConnOpts -> IO ByteString
+sslHttpConnect c = do
+    gen <- makeSystem
+    let params = defaultParams
+               { pCiphers = ciphersuite_all
+               , onCertificatesRecv = certificateChecks
+                     [ certificateVerifyChain
+                     , return . certificateVerifyDomain (cDomain c)
+                     ]
+               }
+        (host,url) = break (=='/') $ cUrl c
+        headers = [ ("Host", L.pack host)
+                  , ("Connection", "closed") ] ++ cHeaders c
+    ctx <- connectionClient (cDomain c) (cPort c) params gen
+    let httpPkt = cMethod c <+> " " <+> L.pack url <+> " HTTP/1.1\r\n"
+              <+> L.concat (map (\(h, v) -> h <+> ": " <+> v <+> "\r\n") headers)
+              <+> if not . null $ cPayload c
+                     then "Content-Length: " <+> L.pack (show . L.length $ payload)
+                      <+> "\r\n\r\n" <+> payload
+                     else ""
+        payload = L.intercalate "&" . map (\(k,v) -> k <+> "=" <+> v) $ cPayload c
+        line = "\n" <+> L.replicate 20 '-' <+> "\n"
+    L.putStrLn $ "HTTP Packet: " <+> line <+> httpPkt <+> line
+    putStrLn "Performing handshake..."
+    handshake ctx
+    putStrLn "Sending data..."
+    sendData ctx httpPkt
+    strictBS <- recvData ctx
+    return $ Chunk strictBS Empty
