@@ -11,7 +11,6 @@ import qualified Zedis
 
 import Data.Maybe
 import Control.Concurrent
-import Control.Lens
 import Control.Monad
 import Control.Applicative
 
@@ -27,10 +26,9 @@ import System.IO
 import System.Environment
 
 import qualified Data.Aeson as A
-import qualified Data.Aeson.Lens as A.Lens
 
 import qualified Data.Text as T
-import qualified Data.Text.IO as T {-# SCC "" #-} 
+import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as T
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as BS
@@ -130,9 +128,11 @@ writeFeedback str = do
 splitPayloads :: BS.ByteString -> Maybe ([BS.ByteString], BS.ByteString)
 splitPayloads json = do
   parsed <- A.decodeStrict json >>= value2hm
-  tokens <- HM.lookup "tokens" parsed
+  tokens <- filter ((==) 64 . BS.length) HM.lookup "tokens" parsed
   payload <- HM.lookup "payload" parsed
-  return (tokens,payload)
+  if BS.length payload > 1900 || length tokens == 0
+     then Nothing
+     else Just (tokens,payload)
   where
     value2hm (A.Object hm) = Just hm
     value2hm _ = Nothing
@@ -160,31 +160,24 @@ feedback = do
 
 push :: MonadIO m => PushermanT m ()
 push = do
-  c <- config
+  let redisqueue = undefined -- TODO: writeme
   redisconn <- redis
   fromRedis <- liftIO $ Zedis.brpop redisconn (redisList c)
-
-  case fromRedis of
-    Nothing -> writeError "failed to load notification from redis"
-    Just res -> case generatePayload res of
-      Nothing -> writeError $ "failed to generate apns payload\t" ++ (BS.unpack res)
-      Just (tokens,payload) -> if BS.length json > 1900
-        then writeError $ "payload too long\t" ++ (BS.unpack json)
-        else mapM_ (sendPush payload) tokens
+  maybe failure success $ fromRedis >>= splitPayload
   where
+    failure = writeError "failed to load valid notification from redis"
+    success (toks,pl) = mapM_ (sendPush pl) toks
     sendPush json token = do
-      if BS.length token /= 64
-        then writeError $ "invalid token\t" ++ (BS.unpack token)
-        else do
-          writeLog $ token <> "\t" <> json
-          let ssl = undefined -- TODO: implement this
-          liftIO $ Push.sendAPNS ssl token (T.decodeUtf8 json)
+      writeLog $ token <> "\t" <> json
+      let ssl = undefined -- TODO: implement this
+      liftIO $ Push.sendAPNS ssl token (T.decodeUtf8 json)
 
 -- Config reading
 
 -- TODO: catch file reading errors
 readConfig :: IO (Either String Config)
-readConfig = A.eitherDecode =<< BS.readFile . fromMaybe "config.json" . listToMaybe =<< getArgs
+readConfig = A.eitherDecode =<< f =<< getArgs
+  where f = BS.readFile . fromMaybe "config.json" . listToMaybe
   
 -- Main
 
