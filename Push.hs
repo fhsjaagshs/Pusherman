@@ -1,6 +1,10 @@
 module Push (
-  sendAPNS,
-  readFeedback
+  apnsHost,
+  apnsPort,
+  apnsFeedbackHost,
+  apnsFeedbackPort,
+  readFeedback,
+  sendApns
 ) where
   
 import GHC.Word
@@ -9,14 +13,7 @@ import Data.Binary.Get
 import Data.Convertible
 
 import Data.Maybe
-
-import Data.Time.Clock.POSIX
-
-import OpenSSL
-import OpenSSL.Session
-
-import Network.BSD
-import Network.Socket
+import Data.Time.Clock.POSIX as CP
 
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T.Encoding
@@ -24,73 +21,50 @@ import qualified Data.Text.Encoding as T.Encoding
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Char8 as BS
-import qualified Data.ByteString.UTF8 as BU
-import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.UTF8 as BU -- TODO: see if buildPDU really needs this
 
-getFeedback :: Get (Integer, String)
-getFeedback = do
-  time <- getWord32be
-  len <- getWord16be
-  dtoken <- getByteString $ convert len
-  return (fromIntegral time, BS.unpack $ B16.encode dtoken)
+feedback :: Get (Integer, B.ByteString)
+feedback = (,)
+  <$> (fromIntegral <$> getWord32be) -- time
+  <*> (getWord16be >>= fmap B16.encode . getByteString . convert) -- token
     
 buildPDU :: B.ByteString -> BU.ByteString -> Word32 -> Put -- second one is BU.ByteString
 buildPDU token payload expiry
-  | (B.length token) /= 32 = fail "Invalid token"
-  | (B.length payload > 1900) = fail "Payload bigger than APNS size limit." -- 2000 is the max payload (minus some thick padding)
+  | (B.length token) /= 32 = fail "invalid token"
+  | (B.length payload > 1900) = fail "payload too large (max 2000)"
   | otherwise = do
     putWord8 1
     putWord32be 1
     putWord32be expiry
-    putWord16be ((Data.Convertible.convert $ B.length token) :: Word16)
+    putWord16be $ convert $ B.length token
     putByteString token
-    putWord16be ((Data.Convertible.convert $ B.length payload) :: Word16)
+    putWord16be $ convert $ B.length payload
     putByteString payload
-  
-writeSSL :: SSLContext -> String -> PortNumber -> B.ByteString -> IO ()
-writeSSL ssl host port str = withOpenSSL $ do
-  proto <- Network.BSD.getProtocolNumber "tcp"
-  he <- Network.BSD.getHostByName host
-  sock <- socket AF_INET Stream proto
-  
-  Network.Socket.connect sock (SockAddrInet port (hostAddress he))
-  
-  sslsocket <- OpenSSL.Session.connection ssl sock
-  
-  OpenSSL.Session.connect sslsocket
-  OpenSSL.Session.write sslsocket str
-  OpenSSL.Session.shutdown sslsocket Bidirectional
-  
-  connected <- sIsConnected sock
-  
-  Network.Socket.sClose sock
 
-readSSL :: SSLContext -> String -> PortNumber -> Int -> IO (B.ByteString)
-readSSL ssl host port readLen = withOpenSSL $ do
-  proto <- Network.BSD.getProtocolNumber "tcp"
-  he <- Network.BSD.getHostByName host
-  sock <- socket AF_INET Stream proto
-  
-  Network.Socket.connect sock (SockAddrInet port (hostAddress he))
-  
-  sslsocket <- OpenSSL.Session.connection ssl sock
-  
-  OpenSSL.Session.connect sslsocket
-  readStr <- OpenSSL.Session.read sslsocket readLen
-  OpenSSL.Session.shutdown sslsocket Bidirectional
-  Network.Socket.sClose sock
-  return readStr
-  
-readFeedback :: SSLContext -> ((Integer, String) -> IO ()) -> IO ()
-readFeedback ssl callback = withOpenSSL $ do
-  readStr <- readSSL ssl "feedback.push.apple.com" 2196 38
-  if (BS.length readStr == 0) then return ()
-  else callback (runGet getFeedback (BL.fromStrict readStr))
-    
-sendAPNS :: SSLContext -> B.ByteString -> T.Text -> IO ()
-sendAPNS ssl token json = withOpenSSL $ do
-  posixTime <- Data.Time.Clock.POSIX.getPOSIXTime
-  let expiry = (round posixTime + 60*60) :: Word32
-  let pdu = (BL.toStrict $ runPut $ buildPDU (fst $ B16.decode token) (T.Encoding.encodeUtf8 json) expiry)
-  
-  writeSSL ssl "gateway.push.apple.com" 2195 pdu
+-- TODO: incremental get
+readFeedback :: IO (Maybe B.ByteString) -> ((Integer, B.ByteString) -> IO ()) -> IO
+readFeedback read callback = incrGet feedback read >>= either (return ()) callback
+  where -- read 38
+    incrGet g r = r >>= f . runGetIncremental g
+      where
+        f (Fail _ _ str) = return $ Left str 
+        f (Done _ _ res) = return $ Right res
+        f (Partial p) = r >>= f . p . Just 
+      
+
+sendApns :: (B.ByteString -> IO ()) -> B.ByteString -> B.ByteString -> IO ()
+sendApns w token json = CP.getPOSIXTime >>= w . runPut . buildPayload . (+3600) . round
+  where base16Token = fst $ B16.decode token
+        buildPayload = buildPDU base16Token json
+
+apnsHost :: (IsString a) => a
+apnsHost = "gateway.push.apple.com"
+
+apnsPort :: (Num a) => a
+apnsPort = 2195
+
+apnsFeedbackHost :: (IsString a) => a
+apnsFeedbackHost = "feedback.push.apple.com"
+
+apnsFeedbackPort :: (Num a) => a
+apnsFeedbackPort = 2196

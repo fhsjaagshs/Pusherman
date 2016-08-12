@@ -153,14 +153,15 @@ callWebhook token timestamp = config >>= maybe (return ()) f . webhook
 
 feedback :: MonadIO m => PushermanT m ()
 feedback = do
-  c <- config
-  Push.readFeedback ssl $ \(timestamp, token) -> do
-    writeFeedback $ (show timestamp) ++ "\t" ++ token
+  Push.readFeedback readSSL $ \(timestamp, token) -> do
+    writeFeedback $ (show timestamp) ++ "\t" ++ (B.unpack token)
     callWebhook token timestamp
+  where
+    readSSL = return $ Just ""
 
 push :: MonadIO m => PushermanT m ()
 push = do
-  let redisqueue = undefined -- TODO: writeme
+  redisqueue <- stateRedisQueue <$> ask
   redisconn <- redis
   fromRedis <- liftIO $ Zedis.brpop redisconn (redisList c)
   maybe failure success $ fromRedis >>= splitPayload
@@ -170,7 +171,8 @@ push = do
     sendPush json token = do
       writeLog $ token <> "\t" <> json
       let ssl = undefined -- TODO: implement this
-      liftIO $ Push.sendAPNS ssl token (T.decodeUtf8 json)
+      liftIO $ Push.sendApns ssl token (T.decodeUtf8 json)
+    sslwrite _ = return () -- TODO: implement me
 
 -- Config reading
 
