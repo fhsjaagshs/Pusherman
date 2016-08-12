@@ -15,23 +15,18 @@ import Data.Convertible
 import Data.Maybe
 import Data.Time.Clock.POSIX as CP
 
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as T.Encoding
-
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Base16 as B16
-import qualified Data.ByteString.Char8 as BS
-import qualified Data.ByteString.UTF8 as BU -- TODO: see if buildPDU really needs this
 
 feedback :: Get (Integer, B.ByteString)
 feedback = (,)
   <$> (fromIntegral <$> getWord32be) -- time
   <*> (getWord16be >>= fmap B16.encode . getByteString . convert) -- token
     
-buildPDU :: B.ByteString -> BU.ByteString -> Word32 -> Put -- second one is BU.ByteString
+buildPDU :: B.ByteString -> B.ByteString -> Word32 -> Put
 buildPDU token payload expiry
   | (B.length token) /= 32 = fail "invalid token"
-  | (B.length payload > 1900) = fail "payload too large (max 2000)"
+  | (B.length payload > 1900) = fail "payload too large (max <=2000)"
   | otherwise = do
     putWord8 1
     putWord32be 1
@@ -41,7 +36,7 @@ buildPDU token payload expiry
     putWord16be $ convert $ B.length payload
     putByteString payload
 
--- TODO: incremental get
+-- TODO: ensure this works
 readFeedback :: IO (Maybe B.ByteString) -> ((Integer, B.ByteString) -> IO ()) -> IO
 readFeedback read callback = incrGet feedback read >>= either (return ()) callback
   where -- read 38
