@@ -1,4 +1,4 @@
-module Push (
+module Pusherman.Push (
   apnsHost,
   apnsPort,
   apnsFeedbackHost,
@@ -40,11 +40,12 @@ buildPDU token payload expiry
 readFeedback :: IO (Maybe B.ByteString) -> ((Integer, B.ByteString) -> IO ()) -> IO
 readFeedback read callback = incrGet feedback read >>= either (return ()) callback
   where -- read 38
-    incrGet g r = r >>= f . runGetIncremental g
+    incrGet g r = r >>= h
       where
+        h = f . runGetIncremental g
         f (Fail _ _ str) = return $ Left str 
         f (Done _ _ res) = return $ Right res
-        f (Partial p) = r >>= f . p . Just 
+        f (Partial p) = r >>= f . p . Just
       
 
 sendApns :: (B.ByteString -> IO ()) -> B.ByteString -> B.ByteString -> IO ()
