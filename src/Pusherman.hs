@@ -16,9 +16,6 @@ import Control.Applicative
 
 import Network.HTTP.Client.Conduit
 
---import OpenSSL
---import OpenSSL.Session
-
 import Network.TLS
 import Crypto.Random.AESCtr (makeSystem)
 
@@ -30,20 +27,24 @@ import qualified Data.Aeson as A
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as T
+import qualified Data.ByteString as B
+import qualified Data.ByteString.IO as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Char8 as BS
 
 import qualified Data.HashMap.Strict as HM
 
+-- Configuration from JSON
 data Config = Config {
-  certificate :: !FilePath,
-  key :: !FilePath,
-  redisHost :: !String,
-  redisList :: !String,
-  pushLog :: Maybe FilePath,
-  feedbackLog :: Maybe FilePath,
-  errorLog :: Maybe FilePath,
-  webhook :: Maybe String
+  configCertificate :: !FilePath,
+  configKey :: !FilePath,
+  configRedisHost :: !String,
+  configRedisPort :: !Int,
+  configRedisList :: !String,
+  configPushLog :: Maybe FilePath,
+  configFeedbackLog :: Maybe FilePath,
+  configErrorLog :: Maybe FilePath,
+  configWebhookURL :: Maybe String
 }
 
 instance A.FromJSON Config where
@@ -58,65 +59,48 @@ instance A.FromJSON Config where
                              <*> v A..:? (T.pack "webhook")
   parseJSON _ = mzero
 
+-- Pusherman state
 data State = State {
   stateContext :: Context,
-  stateRedisConnection :: RedisConnection,
-  stateRedisQueue :: String,
-  statePushOutput :: Handle,
-  stateErrorOutput :: Handle,
+  stateRedis :: Redis,
+  stateRedisQueue :: B.ByteString,
+  stateOutputHandle :: Handle,
+  stateErrorHandle :: Handle,
   stateFeedbackHandle :: Handle,
   stateFeedbackWebhook :: Maybe String
 }
 
 mkState :: Config -> IO State
-mkState (Config c k rh rq pl fl el wh) = State
-                                           <$> context
-                                           <*> redisConnection
-                                           <*> redisQueue
-                                           <*> pushOutput
-                                           <*> errorOutput
-                                           <*> stateFeedbackHandle
-                                           <*> stateFeedbackWebhook
+mkState (Config c k rh rp rq pl fl el wh) = State
+                                            <$> context
+                                            <*> redisConnection
+                                            <*> redisQueue
+                                            <*> pushOutput
+                                            <*> errorOutput
+                                            <*> stateFeedbackHandle
+                                            <*> stateFeedbackWebhook
   where
     context = return () -- TODO: implement me
-    redisConnection = Zedis.connectRedis rh
-    redisQueue = return rq
-    pushOutput = maybe (return stdout) (\fp -> openFile fp AppendMode) pl
-    errorOutput = maybe (return stderr) (\fp -> openFile fp AppendMode) el
+    redisConnection = open $ RedisOffline rh rp
+    redisQueue = return $ B,pack rq
+    pushOutput = maybe (return stdout) (flip openFile $ AppendMode) pl
+    errorOutput = maybe (return stderr) (flip openFile $ AppendMode) el
     stateFeedbackHandle = maybe (return stdout) (\fp -> openFile fp AppendMode) fl
     stateFeedbackWebhook = return wh
 
 destroyState :: State -> IO ()
-destroyState (State ssl r q out err fb _) = return ()
+destroyState (State ssl r q out err fb _) = do
+  hClose fb
+  hClose err
+  hClose out
+  close r
+  -- TODO: close down @ssl@
 
 newtype PushermanT m a = PushermanT { runPushermantT :: ReaderT State m a }
 
-redis :: Monad m => PushermanT m RedisConnection
-redis = stateRedisConnection <$> lift ask
-
--- FIXME: should these really be String inputs?
-
-writeError :: MonadIO m => String -> PushermanT m ()
-writeError err = do
-  eh <- stateErrorOutput <$> lift ask
-  liftIO $ do
-    hPutStrLn eh err
-    hFlush eh
-
-writeLog :: MonadIO m => String -> PushermanT m ()
-writeLog out = do
-  oh <- statePushOutput <$> lift ask
-  liftIO $ do
-    hPutStrLn oh out
-    hFlush oh
-
-writeFeedback :: MonadIO m => String -> PushermanT m ()
-writeFeedback str = do
-  fh <- stateFeedbackHandle <$> lift ask
-  liftIO $ do
-    hPutStrLn fh str
-    hFlush fh
-
+-- |Uses @f@ to derive a 'Handle' from the current PushermanT state
+logg :: MonadIO m => (State -> Handle) -> B.ByteString -> PushermanT m ()
+logg f bs = (f <$> ask) >>= \hdl -> liftIO (B.hPutStrLn hdl bs >> hFlush hdl)
 
 --
 -- Payload Generation
@@ -141,12 +125,13 @@ splitPayloads json = do
 -- Push Handling Logic
 --
 
-callWebhook :: MonadIO m => String -> Integer -> PushermanT m ()
-callWebhook token timestamp = config >>= maybe (return ()) f . webhook
+callWebhook :: MonadIO m => BS.ByteString -> Integer -> PushermanT m ()
+callWebhook token ts = ask >>= maybe (return ()) f . stateFeedbackWebhook
   where
+    params = [("token",token), ("timestamp", BS.pack $ show ts)]
     f url = do
       initReq <- liftIO $ parseUrl url
-      let req = (flip urlEncodedBody) initReq { method = "POST" } $ [("token", BS.pack token), ("timestamp", BS.pack $ show timestamp)]
+      let req = (flip urlEncodedBody) initReq { method = "POST" } params
       void $ liftIO $ withManager $ httpNoBody req
   
 -- Main Action
@@ -154,52 +139,47 @@ callWebhook token timestamp = config >>= maybe (return ()) f . webhook
 feedback :: MonadIO m => PushermanT m ()
 feedback = do
   Push.readFeedback readSSL $ \(timestamp, token) -> do
-    writeFeedback $ (show timestamp) ++ "\t" ++ (B.unpack token)
+    logg stateFeedbackHandle $ (B.pack $ show timestamp) <> "\t" <> token
     callWebhook token timestamp
   where
     readSSL = return $ Just ""
 
 push :: MonadIO m => PushermanT m ()
 push = do
-  redisqueue <- stateRedisQueue <$> ask
-  redisconn <- redis
-  fromRedis <- liftIO $ Zedis.brpop redisconn (redisList c)
-  maybe failure success $ fromRedis >>= splitPayload
+  q <- stateRedisQueue <$> ask
+  conn <- stateRedis <$> ask
+  maybe failure success $ (liftIO $ brpop conn q) >>= splitPayload
   where
-    failure = writeError "failed to load valid notification from redis"
+    failure = logg stateErrorHandle "failed to load valid notification from redis"
     success (toks,pl) = mapM_ (sendPush pl) toks
     sendPush json token = do
-      writeLog $ token <> "\t" <> json
-      let ssl = undefined -- TODO: implement this
-      liftIO $ Push.sendApns ssl token (T.decodeUtf8 json)
+      logg stateOutputHandle $ token <> "\t" <> json -- TODO: decide on logging behavior
+      liftIO $ Push.sendApns sslwrite token json
     sslwrite _ = return () -- TODO: implement me
 
--- Config reading
+-- Main Function
 
--- TODO: catch file reading errors
-readConfig :: IO (Either String Config)
-readConfig = A.eitherDecode =<< f =<< getArgs
-  where f = BS.readFile . fromMaybe "config.json" . listToMaybe
-  
--- Main
+pusherman :: Config -> IO ()
+pusherman cnf = do
+  st <- mkState cnf
+  forkIO $ runReaderT (forever feedback) st
+  (flip runReaderT) st $ do
+    logg stateOutputHandle $ "connected\t"
+                           <> (B.pack $ configRedisHost cnf)
+                           <> "\t"
+                           <> (B.pack $ configRedisList cnf)
+    forever push
+--   destroyState state -- TODO: ensure this gets called when the program receives an exit signal
+        
+-- Entry Point
 
 main :: IO ()
-main = readConfig >>= either (hPutStrLn stderr . mappend "invalid configuration: ") run
+main = readConfig >>= either invalidConfig pusherman
   where
-    run cnf = do
-      ecreds <- credentialLoadX509 (certificate cnf) (key cnf)
-      case ecreds of
-        Left err -> hPutStrLn stderr $ "invalid certificate: " ++ err
-        Right creds -> do
-          redisconn <- Zedis.connectRedis (redisHost cnf)
-          -- TODO: handshake this using creds
-          let context = Nothing
-          let state = (cnf,redisconn,context)
-          forkIO $ forever $ runReaderT (runPushermantT feedback) state
-          putStrLn $ "connected\t" ++ (redisHost cnf) ++ "\t" ++ (redisList cnf)
-          forever $ runReaderT (runPushermantT push) state
-          destroyState state -- TODO: ensure this gets called when the program receives an exit signal
-
+    invalidConfig = hPutStrLn stderr . mappend "invalid configuration: "
+    readConfig = A.eitherDecode =<< f =<< getArgs
+      where f = try . BS.readFile . fromMaybe "config.json" . listToMaybe
+            
 -- -- An example of the TLS library
 -- sslHttpConnect :: ConnOpts -> IO ByteString
 -- sslHttpConnect c = do
