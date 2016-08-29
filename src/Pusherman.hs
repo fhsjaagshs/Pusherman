@@ -106,8 +106,9 @@ logg f bs = (f <$> ask) >>= \hdl -> liftIO (B.hPutStrLn hdl bs >> hFlush hdl)
 -- Payload Generation
 --
 
--- Takes JSON from Redis in the format:
--- { "tokens": [], "push_payload": {} }
+-- TODO: typecheck tokens and push_payload
+-- |Takes JSON from Redis in the format:
+-- @{ "tokens": [], "push_payload": {} }@
 -- and turns it into a tuple in the form of (tokens,payload)
 splitPayloads :: BS.ByteString -> Maybe ([BS.ByteString], BS.ByteString)
 splitPayloads json = do

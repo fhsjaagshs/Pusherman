@@ -53,4 +53,9 @@ readRESP r = do
       case count of
         Just (-1) -> Just ""
         Just c -> r c <* readTillCRLF r
-    rarray = return [] -- TODO implement me! Pusherman doesn't need to be able to use arrays.
+    rarray = rinteger >>= loop []
+      where
+        loop z 0 = Just z
+        loop z i = readRESP r >>= \v -> do
+          resp <- v
+          loop (z ++ [resp]) (i - 1)
