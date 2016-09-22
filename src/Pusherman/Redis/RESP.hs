@@ -6,6 +6,7 @@ module Pusherman.Redis.RESP
   readRESP
 )
 
+import Data.Maybe
 import Data.Binary
 import Network.BSD
 import Network.Socket
@@ -28,11 +29,11 @@ data RESP = RedisSimpleString B.ByteString
           | RedisArray [RESP]
           | RedisInteger Integer
 
+-- FIXME: look for \r\n, not just \r
 readTillCRLF :: (Int -> IO B.ByteString) -> IO B.ByteString
-readTillCRLF r = do
-  c <- r 1
-  if c == "\r" then (r 1) >> return ""
-  else return $ c <> readTillCRLF r
+readTillCRLF r = r 1 >>= f
+  where f "\r" = r 1 >> return ""
+        f c = return $ c <> readTillCRLF r
 
 readRESP :: (Int -> IO B.ByteString) -> IO (Maybe RESP)
 readRESP r = do
@@ -48,14 +49,5 @@ readRESP r = do
     rerror = Just . B.pack <$> readTillCRLF r
     rsimple = Just <$> readTillCRLF r
     rinteger = fmap (encode . fst) . BC.readInt <$> readTilLCRLF r
-    rbulk = do
-      count <- rinteger
-      case count of
-        Just (-1) -> Just ""
-        Just c -> r c <* readTillCRLF r
-    rarray = rinteger >>= loop []
-      where
-        loop z 0 = Just z
-        loop z i = readRESP r >>= \v -> do
-          resp <- v
-          loop (z ++ [resp]) (i - 1)
+    rbulk = Just <$> ((rinteger >>= r) <* readTillCRLF r)
+    rarray = rinteger >>= flip replicateM (readRESP r) . fromMaybe 0

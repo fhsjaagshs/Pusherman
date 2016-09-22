@@ -34,6 +34,14 @@ import qualified Data.ByteString.Char8 as BS
 
 import qualified Data.HashMap.Strict as HM
 
+-- TODO:
+--   features:
+--     - support reading from multiple lists
+--   to-finish:
+--     - Redis implementation
+--     - push/pop
+--     - SSL reading/writing using TLS library
+
 -- Configuration from JSON
 data Config = Config {
   configCertificate :: !FilePath,
@@ -88,6 +96,16 @@ mkState (Config c k rh rp rq pl fl el wh) = State
     stateFeedbackHandle = maybe (return stdout) (\fp -> openFile fp AppendMode) fl
     stateFeedbackWebhook = return wh
 
+    callWebhook :: MonadIO m => BS.ByteString -> Integer -> PushermanT m ()
+    callWebhook token ts = ask >>= maybe (return ()) f . stateFeedbackWebhook
+      where
+        params = [("token",token), ("timestamp", BS.pack $ show ts)]
+        f url = do
+          initReq <- liftIO $ parseUrl url
+          let req = (flip urlEncodedBody) initReq { method = "POST" } params
+          void $ liftIO $ withManager $ httpNoBody req
+
+
 destroyState :: State -> IO ()
 destroyState (State ssl r q out err fb _) = do
   hClose fb
@@ -125,15 +143,6 @@ splitPayloads json = do
 --
 -- Push Handling Logic
 --
-
-callWebhook :: MonadIO m => BS.ByteString -> Integer -> PushermanT m ()
-callWebhook token ts = ask >>= maybe (return ()) f . stateFeedbackWebhook
-  where
-    params = [("token",token), ("timestamp", BS.pack $ show ts)]
-    f url = do
-      initReq <- liftIO $ parseUrl url
-      let req = (flip urlEncodedBody) initReq { method = "POST" } params
-      void $ liftIO $ withManager $ httpNoBody req
   
 -- Main Action
 
@@ -149,8 +158,12 @@ push :: MonadIO m => PushermanT m ()
 push = do
   q <- stateRedisQueue <$> ask
   conn <- stateRedis <$> ask
-  maybe failure success $ (liftIO $ brpop conn q) >>= splitPayload
+  maybe failure success $ (liftIO $ brpop conn q) >>= splitPayloads
   where
+    toByteStr (RedisSimpleString s) = Right [s]
+    toByteStr (RedisBulkString s) = Right [s]
+    toByteStr (RedisError e) = Left e
+    toByteStr (RedisArray xs) = map toByteString xs -- TODO: flatten Either String [ByteString]
     failure = logg stateErrorHandle "failed to load valid notification from redis"
     success (toks,pl) = mapM_ (sendPush pl) toks
     sendPush json token = do
@@ -178,9 +191,9 @@ main :: IO ()
 main = readConfig >>= either invalidConfig pusherman
   where
     invalidConfig = hPutStrLn stderr . mappend "invalid configuration: "
-    readConfig = A.eitherDecode =<< f =<< getArgs
+    readConfig = A.eitherDecode =<< f =<< getArgs -- TODO: eitherDecode does not return @IO Config@
       where f = try . BS.readFile . fromMaybe "config.json" . listToMaybe
-            
+
 -- -- An example of the TLS library
 -- sslHttpConnect :: ConnOpts -> IO ByteString
 -- sslHttpConnect c = do

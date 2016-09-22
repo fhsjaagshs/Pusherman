@@ -31,10 +31,12 @@ buildPDU token payload expiry
     putWord8 1
     putWord32be 1
     putWord32be expiry
-    putWord16be $ convert $ B.length token
-    putByteString token
-    putWord16be $ convert $ B.length payload
-    putByteString payload
+    putByteStringLength token
+    putByteStringLength payload
+    where
+      putByteStringLength bs = do
+        putWord16be $ convert $ B.length bs
+        putByteString bs
 
 -- TODO: ensure this works
 readFeedback :: IO (Maybe B.ByteString) -> ((Integer, B.ByteString) -> IO ()) -> IO
