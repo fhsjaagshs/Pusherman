@@ -8,20 +8,8 @@ module Pusherman.Redis.RESP
 
 import Data.Maybe
 import Data.Binary
-import Network.BSD
-import Network.Socket
-import Network.Socket.ByteString as SBS
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
-import qualified Data.ByteString.Lazy as BL
-
-import Pusherman.QueueFace
-
-data Redis = RedisOffline {
-               redisHost :: B.ByteString,
-               redisPort :: Int
-             }
-           | RedisOnline Socket
 
 data RESP = RedisSimpleString B.ByteString
           | RedisBulkString B.ByteString
@@ -51,3 +39,4 @@ readRESP r = do
     rinteger = fmap (encode . fst) . BC.readInt <$> readTilLCRLF r
     rbulk = Just <$> ((rinteger >>= r) <* readTillCRLF r)
     rarray = rinteger >>= flip replicateM (readRESP r) . fromMaybe 0
+

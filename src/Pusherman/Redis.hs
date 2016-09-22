@@ -15,6 +15,8 @@ import Network.Socket.ByteString as SBS
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 
+import Pusherman.Redis.RESP
+
 data Redis = RedisOffline {
                redisHost :: B.ByteString,
                redisPort :: Int
