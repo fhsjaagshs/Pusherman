@@ -14,6 +14,7 @@ import Control.Concurrent
 import Control.Monad
 import Control.Applicative
 
+import Network.Connection as NC
 import Network.HTTP.Client.Conduit
 
 import Network.TLS
@@ -69,7 +70,7 @@ instance A.FromJSON Config where
 
 -- Pusherman state
 data State = State {
-  stateContext :: Context,
+  stateSSLConnection :: NC.Connection,
   stateRedis :: Redis,
   stateRedisQueue :: B.ByteString,
   stateOutputHandle :: Handle,
@@ -88,7 +89,9 @@ mkState (Config c k rh rp rq pl fl el wh) = State
                                             <*> stateFeedbackHandle
                                             <*> stateFeedbackWebhook
   where
-    context = return () -- TODO: implement me
+    context = do
+			c <- initConnectionContext
+			connectTo c (NC.ConnectionParams	apnsHost apnsPort (Just (NC.TLSSettings )) Nothing) 
     redisConnection = open $ RedisOffline rh rp
     redisQueue = return $ B,pack rq
     pushOutput = maybe (return stdout) (flip openFile $ AppendMode) pl
@@ -112,7 +115,7 @@ destroyState (State ssl r q out err fb _) = do
   hClose err
   hClose out
   close r
-  -- TODO: close down @ssl@
+	connectionClose ssl
 
 newtype PushermanT m a = PushermanT { runPushermantT :: ReaderT State m a }
 
@@ -135,7 +138,7 @@ splitPayloads json = do
   payload <- HM.lookup "payload" parsed
   if BS.length payload > 1900 || length tokens == 0
      then Nothing
-     else Just (tokens,payload)
+     else Just (tokens, payload)
   where
     value2hm (A.Object hm) = Just hm
     value2hm _ = Nothing
@@ -168,7 +171,7 @@ push = do
     success (toks,pl) = mapM_ (sendPush pl) toks
     sendPush json token = do
       logg stateOutputHandle $ token <> "\t" <> json -- TODO: decide on logging behavior
-      liftIO $ Push.sendApns sslwrite token json
+			liftIO (sslwrite =<< Push.apnsPayload token json 3600)
     sslwrite _ = return () -- TODO: implement me
 
 -- Main Function
@@ -191,7 +194,7 @@ main :: IO ()
 main = readConfig >>= either invalidConfig pusherman
   where
     invalidConfig = hPutStrLn stderr . mappend "invalid configuration: "
-    readConfig = A.eitherDecode =<< f =<< getArgs -- TODO: eitherDecode does not return @IO Config@
+    readConfig = A.eitherDecode . f =<< getArgs -- TODO: eitherDecode does not return @IO Config@
       where f = try . BS.readFile . fromMaybe "config.json" . listToMaybe
 
 -- -- An example of the TLS library
